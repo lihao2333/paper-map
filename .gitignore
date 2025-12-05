@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Secrets (do not commit)
+.env
+.env.local
+
+# Env (API keys, passwords)
+.env
+.env.local
+
+# Data and cache
+data/
+cache/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+search_output.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+README_back.md
+
+# Environment / secrets
+.env
+
+data

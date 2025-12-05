@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PaperMap - 论文全景地图</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">PaperMap</h1>
+      <p class="subtitle">论文全景地图</p>
+      <p class="tagline">从「被动刷论文」到「基于地图的主动决策」</p>
+    </header>
+
+    <section class="links">
+      <!-- 将 href 替换为你的在线 Demo 地址 -->
+      <a href="#" class="btn btn-primary" id="demo-link">在线 Demo</a>
+      <a href="https://github.com/lihao2333/paper-map" class="btn btn-secondary" target="_blank" rel="noopener">GitHub 仓库</a>
+    </section>
+
+    <section class="content">
+      <h2>核心价值</h2>
+      <p>
+        在 3DGS、WorldModel、RL、VLA 等方向，论文更新速度很快，信息来源又分散。PaperMap 以「关注对象」为核心，不再按信息来源被动接收，而是按你关注的公司、高校、作者主动组织论文，让你始终有一个稳定的全局视角。
+      </p>
+      <p>
+        每天早上约 <strong>10 分钟</strong> 即可快速扫描重点玩家的新工作，再决定是否深度阅读，持续降低论文筛选成本。
+      </p>
+
+      <h2>功能特性</h2>
+      <ul>
+        <li><strong>论文时间线</strong>：按公司 / 高校 / 作者查看论文时间线</li>
+        <li><strong>简称可视化</strong>：论文以简称展示，支持 hover 查看完整信息与 AI 摘要</li>
+        <li><strong>多维度视图</strong>：论文列表、关注的公司工作、关注的高校工作</li>
+        <li><strong>智能补全</strong>：自动获取摘要、生成总结、提取公司与高校信息</li>
+      </ul>
+
+      <h2>界面展示</h2>
+      <div class="screenshot-wrap">
+        <img src="images/screenshot.png" alt="PaperMap Dashboard 主界面" class="screenshot" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <p class="screenshot-placeholder" style="display:none;">请将 Dashboard 主界面截图保存为 <code>docs/images/screenshot.png</code></p>
+      </div>
+
+      <h2>本地启动</h2>
+      <p>克隆仓库后，执行以下命令启动：</p>
+      <pre><code>pip install panel pandas param pysqlite3
+python dashboard.py</code></pre>
+      <p>服务器将在 <code>http://localhost:5006</code> 启动。更多说明请参阅 <a href="https://github.com/lihao2333/paper-map#readme">README</a>。</p>
+    </section>
+
+    <footer class="footer">
+      <p>PaperMap · 论文全景地图 · <a href="https://github.com/lihao2333/paper-map">GitHub</a></p>
+    </footer>
+  </div>
+</body>
+</html>

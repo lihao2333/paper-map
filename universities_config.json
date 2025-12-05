@@ -1,0 +1,20 @@
+{
+  "_comment": "配置文件说明：支持通配符匹配，* 表示任意多个字符，? 表示单个字符。例如：'Stanford*' 会匹配所有以 Stanford 开头的大学名称",
+  "斯坦福大学": ["Stanford University", "Stanford*"],
+  "麻省理工学院": ["MIT", "Massachusetts Institute of Technology", "MIT*"],
+  "卡内基梅隆大学": ["Carnegie Mellon University", "CMU", "Carnegie Mellon*"],
+  "加州大学伯克利分校": ["UC Berkeley", "University of California, Berkeley", "UC Berkeley*"],
+  "清华大学": ["Tsinghua University", "Tsinghua*"],
+  "北京大学": ["Peking University", "Peking*", "Beijing University"],
+  "香港中文大学": ["CUHK", "Chinese University of Hong Kong", "CUHK*"],
+  "香港科技大学": ["HKUST", "Hong Kong University of Science and Technology", "HKUST*"],
+  "上海交通大学": ["Shanghai Jiao Tong University", "SJTU", "Shanghai Jiao Tong*"],
+  "浙江大学": ["Zhejiang University", "ZJU", "Zhejiang University*"],
+  "中科院": ["Chinese Academy of Sciences", "CAS", "Chinese Academy of Sciences*"],
+  "牛津大学": ["University of Oxford", "Oxford University", "Oxford*"],
+  "剑桥大学": ["University of Cambridge", "Cambridge University", "Cambridge*"],
+  "ETH苏黎世": ["ETH Zurich", "Swiss Federal Institute of Technology", "ETH*"],
+  "多伦多大学": ["University of Toronto", "UofT", "University of Toronto*"]
+}
+
+
