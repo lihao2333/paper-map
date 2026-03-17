@@ -43,13 +43,12 @@ const tooltipBlocks = computed<TooltipBlock[]>(() => {
 
   const pushText = (text: string) => blocks.push({ type: 'text', content: text })
 
-  if (h.paper_id || h.author_names?.length || h.date || h.summary || h.abstract || h.company_names?.length || h.university_names?.length || h.tag_names?.length) {
+  if (h.paper_id || h.author_names?.length || h.date || h.summary || h.company_names?.length || h.university_names?.length || h.tag_names?.length) {
     if (h.full_name) blocks.push({ type: 'separator' })
   }
   if (h.paper_id) pushText(`🆔 Paper ID: ${h.paper_id}`)
   if (h.author_names?.length) pushText(`👤 作者: ${h.author_names.join(', ')}`)
   if (h.date) pushText(`📅 日期: ${formatDate(h.date)}`)
-  if (h.abstract) pushText(`📄 摘要: ${h.abstract}`)
   if (h.summary) pushText(`📝 AI 总结: ${h.summary}`)
   if (h.company_names?.length || h.university_names?.length) {
     blocks.push({ type: 'separator' })
