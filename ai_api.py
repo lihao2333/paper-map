@@ -1,8 +1,14 @@
 # Please install OpenAI SDK first: `pip3 install openai`
 import os
-from openai import OpenAI
 import json
-import re
+import urllib.request
+import urllib.error
+
+try:
+    from openai import OpenAI
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    _OPENAI_AVAILABLE = False
 
 # Token 估算：通常 1 token ≈ 4 个字符（保守估计）
 # 模型最大上下文长度：131072 tokens
@@ -10,29 +16,122 @@ import re
 MAX_TEXT_LENGTH = 400000  # 字符数限制
 
 
+def _build_chat_url(base_url: str) -> str:
+    """与 executor 一致：构建 chat completions URL"""
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return f"{url}/v1/chat/completions"
+
+
+def _raw_chat_request(api_url: str, api_key: str, model: str, messages: list, timeout: int = 120) -> str:
+    """
+    使用 urllib 直接发起请求（与 executor 相同方式），绕过 OpenAI SDK 可能的代理/环境问题。
+    返回 choices[0].message.content，失败时抛出异常。
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {"model": model, "messages": messages}
+    req = urllib.request.Request(
+        api_url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            if "<html" in raw.lower() or "<!doctype" in raw.lower():
+                raise RuntimeError(
+                    "API 请求返回了 HTML 而非 JSON，可能是网络代理/认证问题。\n"
+                    "请检查：1) 是否在公司内网需先完成认证 2) 代理设置 3) PAPER_MAP_BASE_URL 是否正确"
+                )
+            payload = json.loads(raw)
+    except json.JSONDecodeError as err:
+        if "<html" in raw.lower() or "<!doctype" in raw.lower():
+            raise RuntimeError(
+                "API 请求返回了 HTML 而非 JSON，可能是网络代理/认证问题。\n"
+                "请检查：1) 是否在公司内网需先完成认证 2) 代理设置 3) PAPER_MAP_BASE_URL 是否正确"
+            ) from err
+        raise
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace")
+        if "<html" in body.lower() or "<!doctype" in body.lower():
+            raise RuntimeError(
+                "API 请求返回了 HTML 而非 JSON，可能是网络代理/认证问题。\n"
+                "请检查：1) 是否在公司内网需先完成认证 2) 代理设置 3) PAPER_MAP_BASE_URL 是否正确"
+            ) from err
+        raise
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError(f"API 返回异常: {payload}")
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    if content is None:
+        raise RuntimeError(f"API 返回无 content: {payload}")
+    return content if isinstance(content, str) else str(content)
+
+
 class AiApi:
     def __init__(self):
         # 从环境变量读取，开源部署时配置 PAPER_MAP_API_KEY + PAPER_MAP_BASE_URL + PAPER_MAP_MODEL
-        api_key = os.environ.get("PAPER_MAP_API_KEY", "")
-        base_url = os.environ.get("PAPER_MAP_BASE_URL") or None
-        self._client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,  # None 时使用 OpenAI 默认
-        )
-        self._model_name = os.environ.get("PAPER_MAP_MODEL", "gpt-4o-mini")
+        self._api_key = os.environ.get("PAPER_MAP_API_KEY", "")
+        base_url = os.environ.get("PAPER_MAP_BASE_URL", None)
+        self._base_url = base_url
+        self._model_name = os.environ.get("PAPER_MAP_MODEL", "None")
+        self._api_url = _build_chat_url(base_url) if base_url else ""
+        self._client = None
+        if _OPENAI_AVAILABLE and self._api_key:
+            self._client = OpenAI(api_key=self._api_key, base_url=base_url)
 
+        print("api_key: ", (self._api_key[:20] + "...") if len(self._api_key) > 20 else self._api_key)
+        print("base_url: ", base_url)
+        print("model_name: ", self._model_name)
+
+    def _chat(self, messages: list, timeout: int = 120) -> str:
+        """
+        发起 chat 请求。优先使用 OpenAI SDK，失败时自动回退到 urllib（与 executor 相同）。
+        这样可避免 SDK 与代理/环境不兼容时返回 HTML 的问题。
+        """
+        # 优先尝试 urllib（与 executor 一致，更稳定）
+        if self._api_url and self._api_key:
+            try:
+                return _raw_chat_request(
+                    self._api_url, self._api_key, self._model_name, messages, timeout=timeout
+                )
+            except Exception as e:
+                # 若 urllib 也失败，且我们有 SDK，可再试 SDK（通常没必要）
+                if self._client:
+                    raise RuntimeError(
+                        f"API 请求失败（urllib 与 executor 相同方式）: {e}\n"
+                        "请检查：1) 是否在公司内网需先完成认证 2) 代理设置 3) PAPER_MAP_BASE_URL 是否正确"
+                    ) from e
+                raise
+        # 无 base_url 时使用 SDK 默认
+        if self._client:
+            r = self._client.chat.completions.create(
+                model=self._model_name, messages=messages, stream=False
+            )
+            if r.choices:
+                return (r.choices[0].message.content or "").strip()
+            raise RuntimeError(f"API 返回空 choices: {r}")
+        raise RuntimeError("未配置 PAPER_MAP_API_KEY 或 PAPER_MAP_BASE_URL")
 
     def query_company_university_names(self, paper_text):
         # 截断文本，确保不超过模型限制
         truncated_text = self._truncate_text(paper_text)
-        
-        response = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant"},
-                {
-                    "role": "user",
-                    "content": """
+
+        content = self._chat([
+            {"role": "system", "content": "You are a helpful assistant"},
+            {
+                "role": "user",
+                "content": """
 请根据论文内容提取作者所属的公司和大学信息。
 
 要求：
@@ -53,12 +152,9 @@ class AiApi:
 论文内容：
 
 """
-                    + truncated_text,
-                },
-            ],
-            stream=False,
-        )
-        content = response.choices[0].message.content
+                + truncated_text,
+            },
+        ])
         try:
             return json.loads(content)
         except Exception as e:
@@ -71,14 +167,11 @@ class AiApi:
     def summary(self, paper_text):
         # 截断文本，确保不超过模型限制
         truncated_text = self._truncate_text(paper_text)
-        
-        response = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {"role": "system", "content": "你是一个 AI 专家， 善于总结论文"},
-                {
-                    "role": "user",
-                    "content": """
+        content = self._chat([
+            {"role": "system", "content": "你是一个 AI 专家， 善于总结论文"},
+            {
+                "role": "user",
+                "content": """
                     请根据以下 abstract 精炼地总结出论文的核心价值。
                     
                     要求：
@@ -90,25 +183,19 @@ class AiApi:
                 abstract 内容：
 
                 """
-                    + truncated_text,
-                },
-            ],
-            stream=False,
-        )
-        content = response.choices[0].message.content
+                + truncated_text,
+            },
+        ])
         return content
 
     def extract_alias(self, paper_text):
         # 截断文本，确保不超过模型限制
         truncated_text = self._truncate_text(paper_text)
-        
-        response = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {"role": "system", "content": "你是一个 AI 专家， 善于总结论文"},
-                {
-                    "role": "user",
-                    "content": """
+        content = self._chat([
+            {"role": "system", "content": "你是一个 AI 专家， 善于总结论文"},
+            {
+                "role": "user",
+                "content": """
 请从论文内容中提取论文的简称（alias）。
 
 要求：
@@ -126,25 +213,20 @@ class AiApi:
 论文内容：
 
 """
-                    + truncated_text,
-                },
-            ],
-            stream=False,
-        )
-        content = response.choices[0].message.content
+                + truncated_text,
+            },
+        ])
         return content
     
     def extract_title(self, paper_text):
         """
         从论文文本中提取标题
         """
-        response = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {"role": "system", "content": "你是一个 AI 专家，善于从论文文本中提取标题"},
-                {
-                    "role": "user",
-                    "content": """
+        content = self._chat([
+            {"role": "system", "content": "你是一个 AI 专家，善于从论文文本中提取标题"},
+            {
+                "role": "user",
+                "content": """
 请从论文内容中提取论文的完整标题（title）。
 
 要求：
@@ -156,12 +238,9 @@ class AiApi:
 论文内容：
 
 """
-                    + paper_text[:2000],  # 只使用前2000个字符
-                },
-            ],
-            stream=False,
-        )
-        content = response.choices[0].message.content.strip()
+                + paper_text[:2000],  # 只使用前2000个字符
+            },
+        ]).strip()
         # 清理可能的引号
         if content.startswith('"') and content.endswith('"'):
             content = content[1:-1]
@@ -214,13 +293,11 @@ class AiApi:
         if len(paper_text) > MAX_TEXT_LENGTH:
             print(f"Warning: Paper text too long ({len(paper_text)} chars), truncated to {len(truncated_text)} chars")
         
-        response = self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {"role": "system", "content": "你是一个 AI 专家，善于从论文文本中提取结构化信息"},
-                {
-                    "role": "user",
-                    "content": """
+        content = self._chat([
+            {"role": "system", "content": "你是一个 AI 专家，善于从论文文本中提取结构化信息"},
+            {
+                "role": "user",
+                "content": """
 请从论文内容中提取以下所有关键信息，并以 JSON 格式返回。
 
 输出格式（必须是合法的 JSON，可以直接被 json.loads() 解析）：
@@ -300,12 +377,9 @@ JSON 格式要求：
 论文内容：
 
 """
-                    + truncated_text,
-                },
-            ],
-            stream=False,
-        )
-        content = response.choices[0].message.content.strip()
+                + truncated_text,
+            },
+        ], timeout=180).strip()
         # 清理可能的代码块标记
         if content.startswith('```'):
             # 移除开头的 ```json 或 ```
