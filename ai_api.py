@@ -90,9 +90,6 @@ class AiApi:
         if _OPENAI_AVAILABLE and self._api_key:
             self._client = OpenAI(api_key=self._api_key, base_url=base_url)
 
-        print("api_key: ", (self._api_key[:20] + "...") if len(self._api_key) > 20 else self._api_key)
-        print("base_url: ", base_url)
-        print("model_name: ", self._model_name)
 
     def _chat(self, messages: list, timeout: int = 120) -> str:
         """
