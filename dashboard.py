@@ -8,12 +8,53 @@ import io
 import html
 import asyncio
 from contextlib import redirect_stdout
-from database import Database
+from database import Database, paper_list_sort_key
 from completer import Completer
 from link_parser import LinkParser
 from paper_collector import PaperCollector
 from datetime import datetime, timedelta
 import config
+
+# 论文列表 DataFrame 排序辅助列（与 paper_list_sort_key 语义一致）
+_MAIN_DF_SORT_COLS = ("_sort_has_arxiv", "_sort_arxiv", "_sort_date", "_sort_pid")
+
+
+def sort_paper_matrix_df(df: pd.DataFrame) -> pd.DataFrame:
+    """矩阵表：列含 paper_id、date、arxiv_id 时，按 arxiv_id 再 date 再 paper_id 倒序。"""
+    if df is None or len(df) == 0:
+        return df
+    out = df.copy()
+    if "arxiv_id" not in out.columns:
+        if "date" in out.columns and "paper_id" in out.columns:
+            return out.sort_values(["date", "paper_id"], ascending=[False, False], na_position="last")
+        return out
+    ak = out["arxiv_id"].fillna("").astype(str).str.strip()
+    out["_sm_has"] = ak.ne("").astype(int)
+    out["_sm_aid"] = ak
+    if "date" not in out.columns:
+        out["date"] = ""
+    out = out.sort_values(
+        by=["_sm_has", "_sm_aid", "date", "paper_id"],
+        ascending=[False, False, False, False],
+        na_position="last",
+    )
+    return out.drop(columns=["_sm_has", "_sm_aid"], errors="ignore")
+
+
+def sort_main_paper_list_df(df: pd.DataFrame) -> pd.DataFrame:
+    """主论文列表 Tabulator：依赖 load_data 写入的 _sort_* 列。"""
+    if df is None or len(df) == 0:
+        return df
+    if not all(c in df.columns for c in _MAIN_DF_SORT_COLS):
+        if "Date" in df.columns and "Paper ID" in df.columns:
+            return df.sort_values(["Date", "Paper ID"], ascending=[False, False], na_position="last")
+        if "Paper ID" in df.columns:
+            return df.sort_values("Paper ID", ascending=False, na_position="last")
+        return df
+    return df.sort_values(
+        list(_MAIN_DF_SORT_COLS), ascending=[False, False, False, False], na_position="last"
+    ).copy()
+
 
 # 统一的 CSS 样式定义 - PaperMap 风格
 # 注意：不使用 <style> 标签，因为会通过 pn.config.raw_css 注入
@@ -441,6 +482,7 @@ class PaperDashboard:
         # 缓存不存在或需要刷新，从数据库加载
         # 缓存不存在或需要刷新，从数据库加载
         self.data = self.database.get_all_papers_with_details()
+        self.data.sort(key=paper_list_sort_key, reverse=True)
         # 初始化 paper_info_map（将在后面填充，但这里先初始化避免错误）
         self.paper_info_map = {}
         # 转换为 DataFrame
@@ -488,7 +530,8 @@ class PaperDashboard:
             
             tag_names = paper.get("tags") or []
             tags_display = format_paper_tags_html(tag_names)
-            
+            ax_s = (str(arxiv_id).strip() if arxiv_id else "")
+
             records.append({
                 "Paper ID": display_id,
                 "Paper ID_original": paper_id,  # 保存原始 paper_id
@@ -505,6 +548,10 @@ class PaperDashboard:
                 "Companies": ", ".join(paper["company_names"]) if paper["company_names"] else "",
                 "Universities": ", ".join(paper["university_names"]) if paper["university_names"] else "",
                 "Tags": tags_display,
+                "_sort_has_arxiv": 1 if ax_s else 0,
+                "_sort_arxiv": ax_s,
+                "_sort_date": date or "",
+                "_sort_pid": paper_id,
                 # Tags_Button 列已移除，不再在论文列表中显示
             })
         self.df = pd.DataFrame(records)
@@ -680,8 +727,7 @@ class PaperDashboard:
             self.company_summary_df = self.company_summary_df[alias_new_order]
             self.company_full_name_df = self.company_full_name_df[alias_new_order]
             
-            # 按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-            self.company_df = self.company_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            self.company_df = sort_paper_matrix_df(self.company_df)
         else:
             self.company_df = pd.DataFrame()
     
@@ -695,6 +741,7 @@ class PaperDashboard:
             df_display = self.author_alias_df[['paper_id']].copy()
             # 添加 date 列
             df_display['date'] = self.author_df['date']
+            df_display['arxiv_id'] = self.author_df['arxiv_id']
             for col in self.author_alias_df.columns:
                 if col != 'paper_id':
                     alias_values = self.author_alias_df[col]
@@ -726,11 +773,9 @@ class PaperDashboard:
                         else:
                             cell_values.append('')
                     df_display[col] = cell_values
-            # 按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-            df_sorted = df_display.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            df_sorted = sort_paper_matrix_df(df_display)
         else:
-            # 如果没有原始数据，使用现有数据
-            df_sorted = self.author_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            df_sorted = sort_paper_matrix_df(self.author_df)
         
         # 如果启用了聚合模式，将相同 date 的工作合并为一行
         if self.group_by_date and 'date' in df_sorted.columns:
@@ -864,11 +909,7 @@ class PaperDashboard:
         if self.df is None or len(self.df) == 0:
             return pn.pane.Str("暂无数据", styles={"font-size": "16px", "padding": "20px"})
         
-        # 按 Date 倒序排序（如果 Date 为空则按 Paper ID）
-        if 'Date' in self.df.columns:
-            df_sorted = self.df.sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
-        else:
-            df_sorted = self.df.sort_values('Paper ID', ascending=False).copy()
+        df_sorted = sort_main_paper_list_df(self.df)
         
         # 只显示需要的列（排除辅助列）
         # 列顺序：Paper ID, Date, Paper Link, Alias, Full Name, Authors, Companies, Universities, Tags, Abstract, Summary
@@ -1069,8 +1110,7 @@ class PaperDashboard:
                 new_column_order = ['paper_id'] + ordered_cols + remaining_cols
                 self.university_df = self.university_df[new_column_order]
             
-            # 按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-            self.university_df = self.university_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            self.university_df = sort_paper_matrix_df(self.university_df)
         else:
             self.university_df = pd.DataFrame()
     
@@ -1169,8 +1209,7 @@ class PaperDashboard:
                     
                     self.author_df[col] = combined_values
             
-            # 按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-            self.author_df = self.author_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            self.author_df = sort_paper_matrix_df(self.author_df)
         else:
             self.author_df = pd.DataFrame()
     
@@ -1184,6 +1223,7 @@ class PaperDashboard:
             df_display = self.company_alias_df[['paper_id']].copy()
             # 添加 date 列
             df_display['date'] = self.company_df['date']
+            df_display['arxiv_id'] = self.company_df['arxiv_id']
             for col in self.company_alias_df.columns:
                 if col != 'paper_id':
                     alias_values = self.company_alias_df[col]
@@ -1215,11 +1255,9 @@ class PaperDashboard:
                         else:
                             cell_values.append('')
                     df_display[col] = cell_values
-            # 按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-            df_sorted = df_display.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            df_sorted = sort_paper_matrix_df(df_display)
         else:
-            # 如果没有原始数据，使用现有数据
-            df_sorted = self.company_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+            df_sorted = sort_paper_matrix_df(self.company_df)
         
         # 如果启用了聚合模式，将相同 date 的工作合并为一行
         if self.group_by_date and 'date' in df_sorted.columns:
@@ -1379,9 +1417,9 @@ class PaperDashboard:
         # 确保数据已按 Date 倒序排序（如果 Date 为空则按 Paper ID）
         if self.df is not None and len(self.df) > 0:
             if 'Date' in self.df.columns:
-                self.df = self.df.sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
+                self.df = sort_main_paper_list_df(self.df)
             else:
-                self.df = self.df.sort_values('Paper ID', ascending=False).copy()
+                self.df = sort_main_paper_list_df(self.df)
         
         # 初始化过滤后的数据
         self.df_filtered = self.df.copy() if self.df is not None else pd.DataFrame()
@@ -1421,9 +1459,9 @@ class PaperDashboard:
                     self.df["Tags"].str.lower().str.contains(query, na=False)
                 )
                 if 'Date' in self.df.columns:
-                    self.df_filtered = self.df[mask].sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
+                    self.df_filtered = sort_main_paper_list_df(self.df[mask])
                 else:
-                    self.df_filtered = self.df[mask].sort_values('Paper ID', ascending=False).copy()
+                    self.df_filtered = sort_main_paper_list_df(self.df[mask])
             
             # 直接更新表格值
             self.table.value = self.df_filtered[display_cols] if len(self.df_filtered) > 0 else self.df_filtered
@@ -1532,9 +1570,9 @@ class PaperDashboard:
                 display_cols = ["Paper ID", "Date", "Paper Link", "Alias", "Full Name", "Companies", "Universities", "Tags", "Abstract", "Summary"]
                 if self.df is not None and len(self.df) > 0:
                     if 'Date' in self.df.columns:
-                        self.df = self.df.sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
+                        self.df = sort_main_paper_list_df(self.df)
                     else:
-                        self.df = self.df.sort_values('Paper ID', ascending=False).copy()
+                        self.df = sort_main_paper_list_df(self.df)
                     self.df_filtered = self.df.copy()
                     # 如果启用了聚合模式，重新创建表格
                     if self.group_by_date:
@@ -1559,9 +1597,9 @@ class PaperDashboard:
                 display_cols = ["Paper ID", "Date", "Paper Link", "Alias", "Full Name", "Companies", "Universities", "Tags", "Abstract", "Summary"]
                 if self.df is not None and len(self.df) > 0:
                     if 'Date' in self.df.columns:
-                        self.df = self.df.sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
+                        self.df = sort_main_paper_list_df(self.df)
                     else:
-                        self.df = self.df.sort_values('Paper ID', ascending=False).copy()
+                        self.df = sort_main_paper_list_df(self.df)
                     self.df_filtered = self.df.copy()
                     # 如果启用了聚合模式，重新创建表格
                     if self.group_by_date:
@@ -1701,8 +1739,7 @@ class PaperDashboard:
         if self.university_df is None or len(self.university_df) == 0:
             return pn.pane.Str("暂无高校数据", styles={"font-size": "16px", "padding": "20px"})
         
-        # 确保数据已按 date 倒序排序，如果 date 相同就按照 paper_id 倒序排序
-        df_sorted = self.university_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+        df_sorted = sort_paper_matrix_df(self.university_df)
         
         # 如果启用了聚合模式，将相同 date 的工作合并为一行
         if self.group_by_date and 'date' in df_sorted.columns:
@@ -3551,7 +3588,16 @@ class PaperDashboard:
         tag_df = alias_df[['paper_id']].copy()
         # 添加 date 列
         tag_df['date'] = tag_df['paper_id'].map(paper_date_map).fillna('')
-        
+        _pax = (
+            df_raw[["paper_id", "arxiv_id"]]
+            .dropna(subset=["arxiv_id"])
+            .drop_duplicates(subset=["paper_id"], keep="last")
+        )
+        _arxiv_map = dict(
+            zip(_pax["paper_id"], _pax["arxiv_id"].astype(str).str.strip())
+        )
+        tag_df["arxiv_id"] = tag_df["paper_id"].map(lambda p: _arxiv_map.get(p, ""))
+
         # 按照标签名称排序（确保一级标签在前）
         tag_names_sorted = sorted(tag_id_to_name.values(), key=lambda x: (x != top_level_tag_name, x))
         
@@ -3618,8 +3664,7 @@ class PaperDashboard:
             combined_values = combined_values.reindex(tag_df.index, fill_value='')
             tag_df[tag_name] = combined_values
         
-        # 按 date 倒序排序，然后按 paper_id 倒序排序（空值排在最后）
-        tag_df = tag_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+        tag_df = sort_paper_matrix_df(tag_df)
         
         # 如果启用了聚合模式，将相同 date 的工作合并为一行
         if self.group_by_date and 'date' in tag_df.columns:
@@ -4446,9 +4491,9 @@ class PaperDashboard:
                 # 确保数据已排序
                 if self.df is not None and len(self.df) > 0:
                     if 'Date' in self.df.columns:
-                        self.df = self.df.sort_values(['Date', 'Paper ID'], ascending=[False, False], na_position='last').copy()
+                        self.df = sort_main_paper_list_df(self.df)
                     else:
-                        self.df = self.df.sort_values('Paper ID', ascending=False).copy()
+                        self.df = sort_main_paper_list_df(self.df)
                 self.df_filtered = self.df.copy() if self.df is not None else pd.DataFrame()
                 # 如果启用了聚合模式，重新创建表格以应用聚合
                 if self.group_by_date:
@@ -4465,10 +4510,7 @@ class PaperDashboard:
                 else:
                     # 确保数据已排序
                     if self.company_df is not None and len(self.company_df) > 0:
-                        if 'date' in self.company_df.columns:
-                            self.company_df = self.company_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
-                        else:
-                            self.company_df = self.company_df.sort_values('paper_id', ascending=False).copy()
+                        self.company_df = sort_paper_matrix_df(self.company_df)
                     self.company_table.value = self.company_df
             # 刷新高校视图
             if hasattr(self, 'university_table'):
@@ -4478,10 +4520,7 @@ class PaperDashboard:
                 else:
                     # 确保数据已排序
                     if self.university_df is not None and len(self.university_df) > 0:
-                        if 'date' in self.university_df.columns:
-                            self.university_df = self.university_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
-                        else:
-                            self.university_df = self.university_df.sort_values('paper_id', ascending=False).copy()
+                        self.university_df = sort_paper_matrix_df(self.university_df)
                     self.university_table.value = self.university_df
             # 刷新标签表格视图
             try:
@@ -4609,7 +4648,18 @@ class PaperDashboard:
                             new_tag_df = alias_df[['paper_id']].copy()
                             # 添加 date 列
                             new_tag_df['date'] = new_tag_df['paper_id'].map(paper_date_map).fillna('')
-                            
+                            _pax_r = (
+                                df_raw[["paper_id", "arxiv_id"]]
+                                .dropna(subset=["arxiv_id"])
+                                .drop_duplicates(subset=["paper_id"], keep="last")
+                            )
+                            _arxiv_r = dict(
+                                zip(_pax_r["paper_id"], _pax_r["arxiv_id"].astype(str).str.strip())
+                            )
+                            new_tag_df["arxiv_id"] = new_tag_df["paper_id"].map(
+                                lambda p: _arxiv_r.get(p, "")
+                            )
+
                             # 创建 paper_id 到各 DataFrame 行的映射，以便安全地获取值
                             # 使用 paper_id 作为键来对齐数据，而不是依赖索引
                             alias_dict = alias_df.set_index('paper_id').to_dict('index')
@@ -4674,8 +4724,7 @@ class PaperDashboard:
                                 
                                 new_tag_df[tag_name_col] = combined_values
                             
-                            # 按 date 倒序排序，然后按 paper_id 倒序排序（空值排在最后）
-                            new_tag_df = new_tag_df.sort_values(['date', 'paper_id'], ascending=[False, False], na_position='last').copy()
+                            new_tag_df = sort_paper_matrix_df(new_tag_df)
                             
                             # 如果启用了聚合模式，将相同 date 的工作合并为一行
                             if self.group_by_date and 'date' in new_tag_df.columns:

@@ -13,6 +13,7 @@ import json
 import sys
 
 from lib import get_db
+from database import paper_list_sort_key
 
 
 def query_tag_papers(tag_name: str, start_date: str, end_date: str) -> list[dict]:
@@ -48,7 +49,7 @@ def query_tag_papers(tag_name: str, start_date: str, end_date: str) -> list[dict
             "abstract": info.get("abstract", ""),
             "summary": info.get("summary", "") or p.get("summary", ""),
         })
-    rows.sort(key=lambda x: (x.get("date") or "", x.get("paper_id", "")), reverse=True)
+    rows.sort(key=paper_list_sort_key, reverse=True)
     return rows
 
 

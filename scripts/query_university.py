@@ -15,6 +15,7 @@ import json
 import sys
 
 from lib import get_db
+from database import paper_list_sort_key
 
 
 def _resolve_university_name(watched_universities: list[dict], name: str) -> str | None:
@@ -79,7 +80,7 @@ def query_university_papers(university_name: str, start_date: str, end_date: str
         tagged_ids = {p["paper_id"] for p in db.get_papers_by_tag(tag_id)}
         rows = [r for r in rows if r["paper_id"] in tagged_ids]
 
-    rows.sort(key=lambda x: (x.get("date") or "", x.get("paper_id", "")), reverse=True)
+    rows.sort(key=paper_list_sort_key, reverse=True)
     return rows
 
 

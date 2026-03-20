@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from database import Database
+from database import Database, paper_list_sort_key
 from backend.schemas import Paper, PaperCreate, PaperUpdate, PaperListResponse
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -140,8 +140,7 @@ async def list_papers(
             if any(author_lower in a.lower() for a in p.get("author_names", []))
         ]
     
-    # 按日期和 paper_id 倒序排序
-    all_papers.sort(key=lambda x: (x.get("date") or "", x.get("paper_id") or ""), reverse=True)
+    all_papers.sort(key=paper_list_sort_key, reverse=True)
     
     total = len(all_papers)
     start = (page - 1) * page_size

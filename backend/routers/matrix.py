@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from database import Database
+from database import Database, paper_list_sort_key
 from backend.schemas import CompanyMatrixResponse, UniversityMatrixResponse, AuthorMatrixResponse
 
 router = APIRouter(prefix="/matrix", tags=["matrix"])
@@ -80,7 +80,7 @@ def pivot_matrix(data: List[Dict], group_key: str, db: Optional[Database] = None
     
     # 转换为列表并按日期排序
     rows = list(papers_map.values())
-    rows.sort(key=lambda x: (x.get("date") or "", x.get("paper_id") or ""), reverse=True)
+    rows.sort(key=paper_list_sort_key, reverse=True)
     
     return {
         "headers": groups,

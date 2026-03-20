@@ -15,6 +15,7 @@ import json
 import sys
 
 from lib import get_db
+from database import paper_list_sort_key
 
 
 def _resolve_company_name(watched_companies: list[dict], name: str) -> str | None:
@@ -66,7 +67,7 @@ def query_company_papers(company_name: str, start_date: str, end_date: str) -> l
             "abstract": info.get("abstract", ""),
             "summary": info.get("summary", "") or r.get("summary", ""),
         })
-    rows.sort(key=lambda x: (x.get("date") or "", x.get("paper_id", "")), reverse=True)
+    rows.sort(key=paper_list_sort_key, reverse=True)
     return rows
 
 

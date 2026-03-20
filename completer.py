@@ -24,15 +24,31 @@ class Completer:
         os.makedirs(os.path.dirname(self._path) if os.path.dirname(self._path) else '.', exist_ok=True)
 
     def _process_arxiv_comment_venue(
-        self, paper_id: str, paper_info: dict, use_llm_for_venue: bool = True
+        self,
+        paper_id: str,
+        paper_info: dict,
+        use_llm_for_venue: bool = True,
+        *,
+        phase: str = "both",
     ):
         """
         拉取 arXiv comment（若尚未拉过）、解析顶会并返回待写入数据。
-        会就地更新 paper_info 中的 arxiv_comments；is_comment_used 仅在无需 LLM、或 LLM 已成功调用后写入。
-        返回 (paper_info_rows, tag_names)，paper_info_rows 为 0 或 1 条 update_paper_info 记录。
+        会就地更新 paper_info 中的 arxiv_comments。
+        is_comment_used 表示「venue/comment 解析流程已结束」，单独一条 update，与 arxiv_comments 不同条：
+        - 仅写入/更新 arxiv_comments（含仅拉取、或 LLM 未就绪/失败）时不写 is_comment_used。
+        - LLM 成功跑完 extract 后写 is_comment_used；comment 经 API 确认为空时写 is_comment_used（无可解析内容）。
+        返回 (paper_info_rows, tag_names)。
 
-        use_llm_for_venue: 是否用 LLM 解析 venue；未配置 API、未启用 LLM 或调用失败时不写 is_comment_used，便于之后重试。
+        phase:
+        - both: 需要时拉取 comment，再按需 LLM 解析顶会（默认，用于全量补全）。
+        - fetch: 仅调 arXiv API 写入 arxiv_comments，绝不调用 LLM；有正文时不写 is_comment_used，留待 venue。
+        - venue: 不拉取 API，仅用库内已有 comment 做顶会解析；arxiv_comments 为 NULL 时跳过（需先 fetch）。
+
+        use_llm_for_venue: 在 both/venue 下是否用 LLM；未配置或调用失败时只写 comment，不写 is_comment_used（有正文时可下次重试）。
         """
+        if phase not in ("both", "fetch", "venue"):
+            phase = "both"
+
         arxiv_id = paper_info.get("arxiv_id")
         if not arxiv_id:
             return [], []
@@ -40,15 +56,26 @@ class Completer:
         upd_fields = {}
         tag_names = []
 
-        if paper_info.get("arxiv_comments") is None:
-            try:
-                print(f"Fetching arXiv comment for {arxiv_id}")
-                c = self._arxiv_api.get_comment(arxiv_id)
-                upd_fields["arxiv_comments"] = c
-                paper_info["arxiv_comments"] = c
-            except Exception as e:
-                print(f"✗ arXiv comment 获取失败 {paper_id}: {e}")
+        if phase == "venue":
+            if paper_info.get("is_comment_used"):
                 return [], []
+            if paper_info.get("arxiv_comments") is None:
+                return [], []
+        elif phase in ("both", "fetch"):
+            # NULL = 未拉取；"" 且未标记 venue 完成时仍拉一次（修复历史上把 NULL 读成 "" 导致从未请求 API）
+            ac_existing = paper_info.get("arxiv_comments")
+            need_fetch = ac_existing is None or (
+                ac_existing == "" and not paper_info.get("is_comment_used")
+            )
+            if need_fetch:
+                try:
+                    print(f"Fetching arXiv comment for {arxiv_id}", flush=True)
+                    c = self._arxiv_api.get_comment(arxiv_id)
+                    upd_fields["arxiv_comments"] = c
+                    paper_info["arxiv_comments"] = c
+                except Exception as e:
+                    print(f"✗ arXiv comment 获取失败 {paper_id}: {e}")
+                    return [], []
 
         if paper_info.get("is_comment_used"):
             if upd_fields:
@@ -58,38 +85,87 @@ class Completer:
         comment = paper_info.get("arxiv_comments") or ""
         stripped = (comment or "").strip()
 
-        def _row():
+        use_llm = (
+            phase != "fetch"
+            and use_llm_for_venue
+            and self._ai_api.is_llm_configured()
+        )
+
+        def _rows_comment_only():
+            """仅持久化本次拉取的 arxiv_comments，不写 is_comment_used。"""
             if not upd_fields:
-                return [], []
-            return [{"paper_id": paper_id, "arxiv_id": arxiv_id, **upd_fields}], tag_names
+                return []
+            return [{"paper_id": paper_id, "arxiv_id": arxiv_id, **upd_fields}]
 
-        # 无文本则无需调用模型，直接标记已处理以免队列死循环
-        if not stripped:
-            upd_fields["is_comment_used"] = True
+        def _rows_after_venue_done():
+            """LLM 已成功解析（或无需解析）：先写 arxiv_comments，再单独写 is_comment_used。"""
+            ac = upd_fields["arxiv_comments"] if "arxiv_comments" in upd_fields else comment
+            paper_info["arxiv_comments"] = ac
             paper_info["is_comment_used"] = True
-            return _row()
+            return [
+                {
+                    "paper_id": paper_id,
+                    "arxiv_id": arxiv_id,
+                    "arxiv_comments": ac,
+                },
+                {
+                    "paper_id": paper_id,
+                    "arxiv_id": arxiv_id,
+                    "is_comment_used": True,
+                },
+            ]
 
-        if not use_llm_for_venue or not self._ai_api.is_llm_configured():
-            return _row()
+        def _row_is_comment_used_only():
+            paper_info["is_comment_used"] = True
+            return [
+                {
+                    "paper_id": paper_id,
+                    "arxiv_id": arxiv_id,
+                    "is_comment_used": True,
+                }
+            ]
+
+        # 无正文：只持久化本次拉取的 comment；is_comment_used 仅表示「venue 侧已结案」
+        if not stripped:
+            rows = _rows_comment_only()
+            if use_llm:
+                rows.extend(_row_is_comment_used_only())
+            elif upd_fields:
+                # 本轮回已从 API 得到空串：无可解析 venue，避免队列死循环
+                rows.extend(_row_is_comment_used_only())
+            elif phase == "venue":
+                # 库内已有空 comment，仅结案
+                rows.extend(_row_is_comment_used_only())
+            return rows, tag_names
+
+        if not use_llm:
+            return _rows_comment_only(), tag_names
 
         try:
             tag = extract_venue_tag_from_comment(comment, self._ai_api)
         except Exception as e:
             print(f"✗ LLM 顶会解析失败 {paper_id}: {e}")
-            return _row()
+            return _rows_comment_only(), tag_names
 
-        upd_fields["is_comment_used"] = True
-        paper_info["is_comment_used"] = True
+        rows = _rows_after_venue_done()
         if tag:
             tag_names.append(tag)
-        return _row()
+        return rows, tag_names
 
     def _apply_arxiv_comment_venue(
-        self, paper_id: str, paper_info: dict, use_llm_for_venue: bool = True
+        self,
+        paper_id: str,
+        paper_info: dict,
+        use_llm_for_venue: bool = True,
+        *,
+        phase: str = "both",
     ):
         """写入数据库并打标签（用于非 batch 路径）"""
         rows, tags = self._process_arxiv_comment_venue(
-            paper_id, paper_info, use_llm_for_venue=use_llm_for_venue
+            paper_id,
+            paper_info,
+            use_llm_for_venue=use_llm_for_venue,
+            phase=phase,
         )
         if rows:
             self._database.update_paper_info(rows)
@@ -492,39 +568,46 @@ class Completer:
         
         return paper_ids_need
 
-    def _get_paper_ids_need_arxiv_comment_only(self) -> List[str]:
-        """仅需要拉取 / 解析 arXiv comment 的论文（有 arxiv_id，且未存 comment 或未标记已解析）"""
+    def _get_paper_ids_need_arxiv_comment_fetch(self) -> List[str]:
+        """仅需要从 arXiv API 拉取 comment 的论文（有 arxiv_id，且尚未存过有效拉取结果）"""
         out: List[str] = []
         for paper_id in self._database.get_paper_ids():
             paper_info = self._database.get_paper_info(paper_id=paper_id)
-            if not paper_info:
+            if not paper_info or not paper_info.get("arxiv_id"):
                 continue
-            arxiv_id = paper_info.get("arxiv_id")
-            if not arxiv_id:
-                continue
-            if paper_info.get("arxiv_comments") is None or not paper_info.get(
-                "is_comment_used"
-            ):
+            ac = paper_info.get("arxiv_comments")
+            if ac is None or (ac == "" and not paper_info.get("is_comment_used")):
                 out.append(paper_id)
         return out
 
+    def _get_paper_ids_need_venue_from_comment(self) -> List[str]:
+        """需要从已有 arxiv_comments 解析顶会 / 结案的论文（不拉取 API；comment 为 NULL 的不入队）"""
+        out: List[str] = []
+        for paper_id in self._database.get_paper_ids():
+            paper_info = self._database.get_paper_info(paper_id=paper_id)
+            if not paper_info or not paper_info.get("arxiv_id"):
+                continue
+            if paper_info.get("is_comment_used"):
+                continue
+            ac = paper_info.get("arxiv_comments")
+            if ac is None:
+                continue
+            out.append(paper_id)
+        return out
+
     def _paper_ids_sorted_by_date_desc(self) -> List[str]:
-        """全库 paper_id 按 date（yyyyMM）降序；无 date 或非法值排在最后，同日期按 paper_id 升序。"""
+        """全库 paper_id：先有 arxiv 的按 arxiv_id 再 date；无 arxiv 的靠后按 date（与 paper_list_sort_key 一致）。"""
+        from database import paper_list_sort_key
+
         all_ids = self._database.get_paper_ids()
         if not all_ids:
             return []
         batch = self._database.get_papers_info_batch(all_ids)
-
-        def sort_key(pid: str):
-            info = batch.get(pid) or {}
-            d = info.get("date")
-            if d is not None and str(d).strip():
-                s = str(d).strip()
-                if s.isdigit():
-                    return (int(s), pid)
-            return (-1, pid)
-
-        return sorted(all_ids, key=sort_key, reverse=True)
+        return sorted(
+            all_ids,
+            key=lambda pid: paper_list_sort_key(batch.get(pid) or {"paper_id": pid}),
+            reverse=True,
+        )
 
     def _apply_newest_date_limit(
         self, paper_ids_need: List[str], newest_limit: Optional[int]
@@ -541,8 +624,10 @@ class Completer:
         need_set = set(paper_ids_need)
         return [pid for pid in pool if pid in need_set]
 
-    def _complete_single_paper_internal_batch_arxiv_comment_only(self, paper_id: str):
-        """批量路径：仅 arXiv comment / 顶会标签，返回结构与 _complete_single_paper_internal_batch 一致"""
+    def _complete_single_paper_internal_batch_comment_phase(
+        self, paper_id: str, *, phase: str
+    ):
+        """批量路径：仅 comment 拉取（phase=fetch）或仅顶会解析（phase=venue）"""
         updates = {
             "paper_info_updates": [],
             "abstract_updates": [],
@@ -556,7 +641,10 @@ class Completer:
             if not paper_info.get("arxiv_id"):
                 return updates
             pi_rows, tag_names = self._process_arxiv_comment_venue(
-                paper_id, paper_info, use_llm_for_venue=True
+                paper_id,
+                paper_info,
+                use_llm_for_venue=True,
+                phase=phase,
             )
             if pi_rows:
                 updates["paper_info_updates"].extend(pi_rows)
@@ -565,7 +653,7 @@ class Completer:
         except Exception as e:
             import traceback
 
-            print(f"\n❌ arXiv comment 处理 {paper_id} 时出错: {e}")
+            print(f"\n❌ arXiv comment/venue 处理 {paper_id} 时出错: {e}")
             traceback.print_exc()
         return updates
     
@@ -929,7 +1017,7 @@ class Completer:
         self,
         max_workers=10,
         group_size=10,
-        only_arxiv_comment: bool = False,
+        only_mode: Optional[str] = None,
         newest_date_limit: Optional[int] = 200,
     ):
         """
@@ -940,15 +1028,23 @@ class Completer:
         Args:
             max_workers: 每组并发线程数（默认 5）
             group_size: 每组处理的论文数量（默认 20）
-            only_arxiv_comment: 为 True 时只拉取 / 解析 arXiv comment 与顶会标签，不跑其它补全步骤
+            only_mode: None 为全量补全；'arxiv_comment' 仅拉取 arXiv API comment；'venue' 仅基于已有 comment 做顶会标签（LLM）
             newest_date_limit: 仅处理全库按 date 倒序的前 N 篇与「待补全」的交集；默认 200。
                 为 None 或 <=0 时不按日期窗口限制（与旧行为一致）。
         """
         # 1. 查找所有需要 complete 的 paper
-        if only_arxiv_comment:
-            paper_ids = self._get_paper_ids_need_arxiv_comment_only()
-            print(f"全库待补全 arXiv comment: {len(paper_ids)} 篇")
-            batch_fn = self._complete_single_paper_internal_batch_arxiv_comment_only
+        if only_mode == "arxiv_comment":
+            paper_ids = self._get_paper_ids_need_arxiv_comment_fetch()
+            print(f"全库待拉取 arXiv comment: {len(paper_ids)} 篇")
+            batch_fn = lambda pid: self._complete_single_paper_internal_batch_comment_phase(
+                pid, phase="fetch"
+            )
+        elif only_mode == "venue":
+            paper_ids = self._get_paper_ids_need_venue_from_comment()
+            print(f"全库待解析顶会标签（venue）: {len(paper_ids)} 篇")
+            batch_fn = lambda pid: self._complete_single_paper_internal_batch_comment_phase(
+                pid, phase="venue"
+            )
         else:
             paper_ids = self._get_paper_ids_need_complete()
             print(f"全库待补全: {len(paper_ids)} 篇")
@@ -963,11 +1059,13 @@ class Completer:
             )
 
         if not paper_ids:
-            print(
-                "没有需要补全的论文"
-                if not only_arxiv_comment
-                else "没有需要补全 arXiv comment 的论文（若启用了日期窗口，可能该窗口内无待补全项）"
-            )
+            if only_mode == "arxiv_comment":
+                msg = "没有需要拉取 arXiv comment 的论文（若启用了日期窗口，可能该窗口内无待补全项）"
+            elif only_mode == "venue":
+                msg = "没有需要解析 venue 的论文（若启用了日期窗口，可能该窗口内无待补全项）"
+            else:
+                msg = "没有需要补全的论文"
+            print(msg)
             return
 
         # 2. 分组
@@ -976,7 +1074,13 @@ class Completer:
             groups.append(paper_ids[i:i + group_size])
         
         print(f"分为 {len(groups)} 组，每组最多 {group_size} 篇论文，每组并发 {max_workers} 个线程")
-        
+        if only_mode == "arxiv_comment":
+            print(
+                "提示: arXiv API 约 3 秒/篇；进度条在每篇完成后才前进。"
+                "若停在「Fetching …」很久，多为限流(429)退避或网络慢，详见终端中的重试说明。",
+                flush=True,
+            )
+
         # 3. 每组并发处理
         total_success = 0
         total_error = 0
@@ -1045,13 +1149,13 @@ class Completer:
         
         print(f"\n所有补全任务完成: 总计 {total_success} 成功, {total_error} 失败")
 
-    def complete_single_paper(self, paper_id: str, only_arxiv_comment: bool = False) -> str:
+    def complete_single_paper(self, paper_id: str, only_mode: Optional[str] = None) -> str:
         """
         对单个论文执行 complete 操作（只处理指定的 paper_id）
         
         Args:
             paper_id: 要处理的论文 ID
-            only_arxiv_comment: 为 True 时只拉取 / 解析 arXiv comment 与顶会标签
+            only_mode: None 为常规全量步骤；'arxiv_comment' 仅拉取 comment API；'venue' 仅顶会标签
         
         Returns:
             str: 处理日志
@@ -1074,20 +1178,36 @@ class Completer:
                 
                 arxiv_id = paper_info.get("arxiv_id")
 
-                if only_arxiv_comment:
+                if only_mode == "arxiv_comment":
                     if not arxiv_id:
                         print("非 arXiv 论文，跳过 arXiv comment")
                         return output_buffer.getvalue()
-                    print("模式: 仅 arXiv comment / 顶会标签")
+                    print("模式: 仅拉取 arXiv comment（不调 LLM）")
                     try:
                         paper_info = self._database.get_paper_info(paper_id=paper_id)
                         self._apply_arxiv_comment_venue(
-                            paper_id, paper_info, use_llm_for_venue=True
+                            paper_id, paper_info, use_llm_for_venue=True, phase="fetch"
                         )
-                        print("✓ arXiv comment 处理完成")
+                        print("✓ arXiv comment 拉取完成")
                     except Exception as e:
-                        print(f"✗ arXiv comment/venue 处理失败: {e}")
-                    print(f"\n✅ 论文 {paper_id} comment 处理完成")
+                        print(f"✗ arXiv comment 拉取失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} comment 拉取步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "venue":
+                    if not arxiv_id:
+                        print("非 arXiv 论文，跳过 venue")
+                        return output_buffer.getvalue()
+                    print("模式: 仅顶会标签（基于已有 arxiv_comments，使用 LLM）")
+                    try:
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        self._apply_arxiv_comment_venue(
+                            paper_id, paper_info, use_llm_for_venue=True, phase="venue"
+                        )
+                        print("✓ venue 处理完成")
+                    except Exception as e:
+                        print(f"✗ venue 处理失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} venue 步骤结束")
                     return output_buffer.getvalue()
                 
                 # 1. 下载 PDF（如果需要）
@@ -1210,7 +1330,7 @@ if __name__ == "__main__":
         "--only",
         choices=("arxiv_comment", "venue"),
         default=None,
-        help="仅执行指定步骤（不跑 PDF/摘要/AI 等）。arxiv_comment 与 venue 等价：拉取 arXiv comment（若尚无）+ 解析顶会并打 venue.<简称> 标签（不含年份）",
+        help="仅执行指定步骤（不跑 PDF/摘要/AI 等）。arxiv_comment：只调 arXiv API 写 comment；venue：只用库内 comment 调 LLM 打 venue.<简称> 标签（需先拉过 comment）",
     )
     parser.add_argument(
         "--paper-id",
@@ -1246,18 +1366,15 @@ if __name__ == "__main__":
     cache_path = str(args.cache) if args.cache else str(root / "cache")
 
     cache_manager = Completer(cache_path, Database(db_path))
-    only_comment = args.only in ("arxiv_comment", "venue")
 
     if args.paper_id:
-        log = cache_manager.complete_single_paper(
-            args.paper_id, only_arxiv_comment=only_comment
-        )
+        log = cache_manager.complete_single_paper(args.paper_id, only_mode=args.only)
         print(log)
     else:
         nl = None if args.newest_limit <= 0 else args.newest_limit
         cache_manager.complete_new(
             group_size=args.group_size,
             max_workers=args.max_workers,
-            only_arxiv_comment=only_comment,
+            only_mode=args.only,
             newest_date_limit=nl,
         )

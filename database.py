@@ -36,10 +36,25 @@ def _paper_dict_from_view_row(row) -> dict:
         "company_names": row[8].split(",") if row[8] else [],
         "university_names": row[9].split(",") if row[9] else [],
         "author_names": _dedupe_author_names(row[10] or ""),
-        "arxiv_comments": row[11] or "",
+        # NULL 须保持为 None：若写成 ""，completer 会误判「已拉取过」而永远不调 arXiv API
+        "arxiv_comments": row[11],
         "is_comment_used": bool(row[12]) if row[12] is not None else False,
         "tags": tags,
     }
+
+
+def paper_list_sort_key(p: dict) -> tuple:
+    """
+    论文列表倒序排序用 key：先有 arxiv_id 的论文按 arxiv_id 再 date 再 paper_id；
+    无 arxiv_id 的排在后面，按 date 再 paper_id。
+    配合 sort(..., key=paper_list_sort_key, reverse=True) 使用。
+    """
+    aid = (p.get("arxiv_id") or "").strip()
+    d = (p.get("date") or "").strip()
+    pid = (p.get("paper_id") or "").strip()
+    if aid:
+        return (1, aid, d, pid)
+    return (0, "", d, pid)
 
 
 class Database:
@@ -650,9 +665,9 @@ class Database:
                     "author_names": author_names
                 })
 
-            ac = item.get("arxiv_comments")
-            if ac is not None:
-                arxiv_comments_data.append((ac, paper_id))
+            # 显式带键才更新（含 None → 写入 NULL），避免与 is_comment_used 分条更新时漏写 comment
+            if "arxiv_comments" in item:
+                arxiv_comments_data.append((item["arxiv_comments"], paper_id))
 
             icu = item.get("is_comment_used")
             if icu is not None:
@@ -957,7 +972,11 @@ class Database:
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
                        company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view
-                ORDER BY date DESC, paper_id DESC
+                ORDER BY
+                    (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                    arxiv_id DESC,
+                    date DESC,
+                    paper_id DESC
             """)
             return [_paper_dict_from_view_row(row) for row in cursor.fetchall()]
 
@@ -1014,7 +1033,11 @@ class Database:
                            company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                     FROM paper_based_view
                     WHERE {where_sql}
-                    ORDER BY date DESC, paper_id
+                    ORDER BY
+                        (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                        arxiv_id DESC,
+                        date DESC,
+                        paper_id
                     """,
                     params,
                 )
@@ -1033,7 +1056,11 @@ class Database:
                        company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view
                 WHERE {where_sql}
-                ORDER BY date DESC, paper_id
+                ORDER BY
+                    (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                    arxiv_id DESC,
+                    date DESC,
+                    paper_id
                 """,
                 params,
             )
@@ -1089,7 +1116,11 @@ class Database:
                        company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view
                 WHERE {where_sql}
-                ORDER BY date DESC, paper_id
+                ORDER BY
+                    (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                    arxiv_id DESC,
+                    date DESC,
+                    paper_id
                 """,
                 params,
             )
@@ -1509,7 +1540,11 @@ class Database:
                 FROM paper p
                 INNER JOIN paper_tag pt ON p.paper_id = pt.paper_id
                 WHERE pt.tag_id = ?
-                ORDER BY p.date DESC, p.paper_id
+                ORDER BY
+                    (CASE WHEN p.arxiv_id IS NOT NULL AND TRIM(p.arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                    p.arxiv_id DESC,
+                    p.date DESC,
+                    p.paper_id
             """, (tag_id,))
             results = []
             for paper_id, arxiv_id, paper_url, alias, full_name, summary in cursor.fetchall():
@@ -1619,7 +1654,11 @@ class Database:
                 INNER JOIN paper_tag pt ON p.paper_id = pt.paper_id
                 INNER JOIN tag t ON pt.tag_id = t.tag_id
                 WHERE pt.tag_id IN ({placeholders})
-                ORDER BY p.date DESC, p.paper_id
+                ORDER BY
+                    (CASE WHEN p.arxiv_id IS NOT NULL AND TRIM(p.arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                    p.arxiv_id DESC,
+                    p.date DESC,
+                    p.paper_id
             """, tag_ids)
             
             results = []
