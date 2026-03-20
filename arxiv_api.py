@@ -26,13 +26,13 @@ class ArxivApi:
     封装 arXiv 官方 API。必须复用同一个 arxiv.Client，其 delay_seconds 才会在多次调用之间生效；
     若每次请求都 new Client()，则不会节流，容易触发 export.arxiv.org 的 HTTP 429。
 
-    环境变量：ARXIV_API_DELAY_SECONDS、ARXIV_API_NUM_RETRIES、ARXIV_HTTP_TIMEOUT（秒，默认 90）。
+    环境变量：ARXIV_API_DELAY_SECONDS（默认 5）、ARXIV_API_NUM_RETRIES、ARXIV_HTTP_TIMEOUT（秒，默认 90）。
     """
 
     def __init__(self, delay_seconds: float | None = None, num_retries: int | None = None):
         if delay_seconds is None:
             env = os.environ.get("ARXIV_API_DELAY_SECONDS")
-            delay_seconds = float(env) if env not in (None, "") else 3.0
+            delay_seconds = float(env) if env not in (None, "") else 5.0
         if num_retries is None:
             env = os.environ.get("ARXIV_API_NUM_RETRIES")
             num_retries = int(env) if env not in (None, "") else 3

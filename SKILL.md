@@ -27,7 +27,7 @@ description: Query and summarize paper data from PaperMap. 支持按公司、高
 | | | `python scripts/query_author.py 李华 --json` |
 | **compare_companies.py** | 多关注公司论文数量对比 | `python scripts/compare_companies.py 202401 202412` |
 | | | `python scripts/compare_companies.py --json` |
-| **completer.py** | 论文缓存/元数据补全（可原子步骤分跑） | `python completer.py --help`（`--only arxiv_metadata` 拉元数据并做 comment 结案，再 `--only venue` 打顶会标签） |
+| **completer.py** | 论文缓存/元数据补全（可原子步骤分跑） | `python completer.py --help`（`--only arxiv_metadata` 拉元数据并做 comment 结案；顶会 LLM 用 `--only ai_info_based_arxiv_meta_info`；正文 LLM 用 `--only ai_info_based_paper`） |
 
 - 所有脚本支持 `--json` 输出，便于 AI 解析后生成总结
 - 日期格式为 `yyyyMM`，如 202401

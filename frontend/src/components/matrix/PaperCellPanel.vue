@@ -2,13 +2,22 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { PopoverRoot, PopoverTrigger, PopoverAnchor, PopoverPortal, PopoverContent } from 'radix-vue'
 import AddTagPopover from '@/components/tags/AddTagPopover.vue'
+import VenueTagChips from '@/components/papers/VenueTagChips.vue'
 import type { HoverInfo } from '@/types'
-import { formatDate, generateArxivLink } from '@/lib/utils'
+import {
+  formatDate,
+  generateArxivLink,
+  isProminentTagName,
+  prominentTagPanelClassFor,
+  prominentTagShortLabel,
+} from '@/lib/utils'
 import { Tag, X, Github } from 'lucide-vue-next'
 
 interface Props {
   hoverInfo: HoverInfo | null
   cellContent: string
+  /** venue.* 来源：矩阵格用 row.hover_info */
+  venueTagSource?: HoverInfo | string[] | null
   isVisited: boolean
   paperId: string
   onOpenLink: () => void
@@ -143,7 +152,10 @@ const paperLink = computed(() => {
         @mouseleave="onTriggerLeave"
         @click="onTriggerClick"
       >
-        {{ cellContent }}
+        <span class="inline-flex max-w-full flex-wrap items-baseline gap-1 text-left">
+          <VenueTagChips :tag-source="venueTagSource ?? hoverInfo" />
+          <span class="truncate">{{ cellContent }}</span>
+        </span>
       </button>
     </PopoverTrigger>
     </PopoverAnchor>
@@ -204,9 +216,19 @@ const paperLink = computed(() => {
             <span
               v-for="t in (hoverInfo?.tags ?? [])"
               :key="t.tag_id"
-              class="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 text-gray-800 text-xs"
+              :class="[
+                'inline-flex items-center gap-1 rounded-md text-xs',
+                isProminentTagName(t.tag_name)
+                  ? prominentTagPanelClassFor(t.tag_name)
+                  : 'bg-gray-100 px-2 py-1 text-gray-800',
+              ]"
+              :title="t.tag_name"
             >
-              {{ t.tag_name }}
+              {{
+                isProminentTagName(t.tag_name)
+                  ? prominentTagShortLabel(t.tag_name)
+                  : t.tag_name
+              }}
               <button
                 type="button"
                 class="rounded p-0.5 hover:bg-red-100 text-gray-500 hover:text-red-600 transition-colors"

@@ -5,12 +5,13 @@ import TagTree from '@/components/tags/TagTree.vue'
 import { Card, Button, Badge } from '@/components/ui'
 import * as api from '@/api'
 import { RefreshCw, ExternalLink, Github } from 'lucide-vue-next'
+import VenueTagChips from '@/components/papers/VenueTagChips.vue'
 import {
-  formatAbbrevWithVenueTags,
   formatDate,
   formatMonth,
   generateArxivLink,
   getMonthKey,
+  paperDisplayTitle,
   truncate,
 } from '@/lib/utils'
 
@@ -151,8 +152,11 @@ onMounted(fetchTagTree)
                       <span>·</span>
                       <span class="font-mono">{{ paper.arxiv_id || paper.paper_id }}</span>
                     </div>
-                    <h4 class="font-medium mb-1">
-                      {{ formatAbbrevWithVenueTags(paper.alias || paper.full_name, paper.tags) }}
+                    <h4 class="mb-1 flex flex-wrap items-baseline gap-1.5 gap-y-1 font-medium">
+                      <VenueTagChips :tag-source="paper.tags" />
+                      <span class="text-foreground">
+                        {{ paperDisplayTitle(paper.alias || paper.full_name) }}
+                      </span>
                     </h4>
                     <p v-if="paper.summary" class="text-sm text-muted-foreground">
                       {{ truncate(paper.summary, 200) }}

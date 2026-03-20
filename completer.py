@@ -420,8 +420,8 @@ class Completer:
                 import traceback
                 traceback.print_exc()
 
-        paper_ids = self._get_paper_ids_need_ai_attributes()
-        print(f"Fetching {len(paper_ids)} ai attributes")
+        paper_ids = self._get_paper_ids_need_ai_from_paper_txt()
+        print(f"Fetching {len(paper_ids)} ai attributes (paper.txt LLM)")
         for paper_id in paper_ids:
             try:
                 self._fetch_ai_attributes_by_paper_id(paper_id)
@@ -431,40 +431,36 @@ class Completer:
                 traceback.print_exc()
 
 
-    def _get_paper_ids_need_ai_attributes(self) -> List[str]:
+    def _paper_needs_ai_from_paper_txt(self, paper_info: dict) -> bool:
         """
-        一下任意属性缺失：
-        - abstract
-        - full_name 
-        - summary
-        - alias
+        是否需要对 paper.txt 调 LLM（quyer_paper_info，长上下文、高开销）。
+        有 arxiv_id 时，摘要/标题等应优先走 arXiv API，不混入本队列。
         """
-        all_paper_ids = self._database.get_paper_ids()
-        paper_ids_need = []
-        for paper_id in all_paper_ids:
+        if not paper_info:
+            return False
+        if not paper_info.get("summary") or not paper_info.get("alias"):
+            return True
+        if not paper_info.get("arxiv_id"):
+            return not (
+                paper_info.get("abstract")
+                and paper_info.get("full_name")
+                and paper_info.get("summary")
+                and paper_info.get("alias")
+            )
+        return False
+
+    def _get_paper_ids_need_ai_from_paper_txt(self) -> List[str]:
+        """待对正文做 LLM 抽取的论文（summary/alias 或非 arXiv 缺字段）。"""
+        out: List[str] = []
+        for paper_id in self._database.get_paper_ids():
             paper_info = self._database.get_paper_info(paper_id=paper_id)
-            missing_fields = []
-            
-            # 检查各项字段
-            if not paper_info.get("abstract"):
-                missing_fields.append("abstract")
-            if not paper_info.get("summary"):
-                missing_fields.append("summary")
-            if not paper_info.get("alias"):
-                missing_fields.append("alias")
-            if not paper_info.get("full_name"):
-                missing_fields.append("full_name")
-            
-            # 如果有缺少的字段，打印详细信息
-            if missing_fields:
-                print(f"Paper ID: {paper_id}")
-                print(f"  缺少字段: {', '.join(missing_fields)}")
-                print(f"  当前信息: abstract={bool(paper_info.get('abstract'))}, "
-                      f"summary={bool(paper_info.get('summary'))}, "
-                      f"alias={bool(paper_info.get('alias'))}, "
-                      f"full_name={bool(paper_info.get('full_name'))}, ")
-                paper_ids_need.append(paper_id)
-        return paper_ids_need
+            if paper_info and self._paper_needs_ai_from_paper_txt(paper_info):
+                out.append(paper_id)
+        return out
+
+    def _get_paper_ids_need_ai_from_arxiv_metadata_llm(self) -> List[str]:
+        """待基于已有 arxiv_comments 做 LLM（venue）的论文，与 _get_paper_ids_need_venue_from_comment 一致。"""
+        return self._get_paper_ids_need_venue_from_comment()
     
     def _fetch_ai_attributes_by_paper_id(self, paper_id: str):
         """
@@ -476,11 +472,11 @@ class Completer:
             print(f"Paper info not found for {paper_id}")
             return
 
-        txt_path = os.path.join(self._path, paper_id, "paper.txt")
-        if not os.path.exists(txt_path):
-            print(f"PDF text not found for {paper_id}, skipping ai attributes")
+        if not self._ensure_paper_txt_for_ai_llm(paper_id, paper_info):
+            print(f"无法得到 paper.txt，跳过正文 LLM: {paper_id}")
             return
-        
+
+        txt_path = os.path.join(self._path, paper_id, "paper.txt")
         paper_text = open(txt_path, 'r', encoding='utf-8').read()
         result = self._ai_api.quyer_paper_info(paper_text)
         if result:
@@ -527,6 +523,32 @@ class Completer:
         txt = pdf_convertor.convert_to_text()
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(txt)
+
+    def _ensure_paper_txt_for_ai_llm(self, paper_id: str, paper_info: dict) -> bool:
+        """
+        为正文 LLM 保证存在 paper.txt：已有则 True；
+        仅有 PDF 则转换；无 PDF 则按 arxiv_id / paper_url 下载后再转换。
+        """
+        txt_path = os.path.join(self._path, paper_id, "paper.txt")
+        if os.path.isfile(txt_path):
+            return True
+        pdf_path = os.path.join(self._path, paper_id, "paper.pdf")
+        if not os.path.isfile(pdf_path):
+            try:
+                self._download_pdf(paper_id, paper_info.get("arxiv_id"))
+            except Exception as e:
+                print(f"✗ 无法下载 PDF {paper_id}: {e}")
+                return False
+        if not os.path.isfile(pdf_path):
+            print(f"✗ 下载后仍无 paper.pdf: {paper_id}")
+            return False
+        if not os.path.isfile(txt_path):
+            try:
+                self._convert_pdf_to_txt(paper_id)
+            except Exception as e:
+                print(f"✗ PDF→TXT 失败 {paper_id}: {e}")
+                return False
+        return os.path.isfile(txt_path)
 
     def _download_pdf(self, paper_id: str, arxiv_id: str = None):
         """
@@ -751,11 +773,11 @@ class Completer:
         """
         try:
             print(f"Fetching ai attributes for {paper_id}")
-            txt_path = os.path.join(self._path, paper_id, "paper.txt")
-            if not os.path.exists(txt_path):
-                print(f"PDF text not found for {paper_id}, skipping ai attributes")
+            if not self._ensure_paper_txt_for_ai_llm(paper_id, paper_info):
+                print(f"无法得到 paper.txt，跳过正文 LLM: {paper_id}")
                 return None
-            
+
+            txt_path = os.path.join(self._path, paper_id, "paper.txt")
             paper_text = open(txt_path, 'r', encoding='utf-8').read()
             result = self._ai_api.quyer_paper_info(paper_text)
             if result:
@@ -1011,7 +1033,7 @@ class Completer:
     def _complete_single_paper_internal_batch_atomic(self, paper_id: str, step: str):
         """
         单步补全（批量路径）：只执行 step，返回与其它 batch 相同的 updates 结构。
-        step: download_pdf | pdf_to_txt | abstract | authors | full_name | ai
+        step: download_pdf | pdf_to_txt | abstract | authors | full_name | ai_info_based_paper
         """
         updates = {
             "paper_info_updates": [],
@@ -1057,7 +1079,7 @@ class Completer:
                     updates["paper_info_updates"].append(row)
                 return updates
 
-            if step == "ai":
+            if step == "ai_info_based_paper":
                 ai_data = self._fetch_ai_attributes_data(paper_id, paper_info)
                 if ai_data:
                     update_dict = {
@@ -1099,7 +1121,7 @@ class Completer:
         max_workers=10,
         group_size=10,
         only_mode: Optional[str] = None,
-        newest_date_limit: Optional[int] = 200,
+        newest_date_limit: Optional[int] = 1000,
     ):
         """
         新的 complete 方法：先查找所有需要 complete 的 paper，然后用多线程，
@@ -1110,13 +1132,14 @@ class Completer:
             max_workers: 每组并发线程数（默认 5）
             group_size: 每组处理的论文数量（默认 20）
             only_mode: None 为全量补全；否则为原子步骤，见 --only 帮助。
-            newest_date_limit: 仅处理全库按 date 倒序的前 N 篇与「待补全」的交集；默认 200。
+                两类 LLM：ai_info_based_paper（正文）与 ai_info_based_arxiv_meta_info（arxiv_comments）。
+            newest_date_limit: 仅处理全库按 date 倒序的前 N 篇与「待补全」的交集；默认 1000。
                 为 None 或 <=0 时不按日期窗口限制（与旧行为一致）。
         """
         # 1. 查找所有需要 complete 的 paper
-        if only_mode == "venue":
-            paper_ids = self._get_paper_ids_need_venue_from_comment()
-            print(f"全库待解析顶会标签（venue）: {len(paper_ids)} 篇")
+        if only_mode == "ai_info_based_arxiv_meta_info":
+            paper_ids = self._get_paper_ids_need_ai_from_arxiv_metadata_llm()
+            print(f"全库待 LLM（arxiv_comments → 顶会标签，元数据侧）: {len(paper_ids)} 篇")
 
             def batch_fn(pid: str):
                 return self._complete_single_paper_internal_batch_comment_phase(
@@ -1148,10 +1171,10 @@ class Completer:
             print(f"全库待补全标题（arXiv 走 API）: {len(paper_ids)} 篇")
             batch_fn = self._atomic_batch_fn("full_name")
 
-        elif only_mode == "ai":
-            paper_ids = self._get_paper_ids_need_ai_attributes()
-            print(f"全库待 AI 属性（需 paper.txt）: {len(paper_ids)} 篇")
-            batch_fn = self._atomic_batch_fn("ai")
+        elif only_mode == "ai_info_based_paper":
+            paper_ids = self._get_paper_ids_need_ai_from_paper_txt()
+            print(f"全库待正文 LLM（按需 PDF→TXT → quyer_paper_info，高开销）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("ai_info_based_paper")
 
         elif only_mode == "arxiv_metadata":
             paper_ids = self._get_paper_ids_need_arxiv_metadata()
@@ -1175,13 +1198,13 @@ class Completer:
 
         if not paper_ids:
             empty_msgs = {
-                "venue": "没有需要解析 venue 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
+                "ai_info_based_arxiv_meta_info": "没有需要跑 arxiv_comments LLM 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
                 "download_pdf": "没有需要下载 PDF 的论文",
                 "pdf_to_txt": "没有需要 PDF→TXT 的论文（需先有 paper.pdf）",
                 "abstract": "没有需要拉取摘要的 arXiv 论文",
                 "authors": "没有需要拉取作者的 arXiv 论文",
                 "full_name": "没有需要补全标题的论文",
-                "ai": "没有需要补全 AI 属性的论文",
+                "ai_info_based_paper": "没有需要跑正文 LLM 的论文",
                 "arxiv_metadata": "没有需要拉取 arXiv 元数据的论文",
             }
             msg = empty_msgs.get(
@@ -1354,7 +1377,8 @@ class Completer:
         
         Args:
             paper_id: 要处理的论文 ID
-            only_mode: None 为常规全量步骤；否则为原子步骤（与 CLI --only 一致）
+            only_mode: None 为常规全量步骤；否则为原子步骤（与 CLI --only 一致）。
+                正文 LLM 用 ai_info_based_paper；arxiv_comments LLM 用 ai_info_based_arxiv_meta_info。
         
         Returns:
             str: 处理日志
@@ -1368,7 +1392,7 @@ class Completer:
         try:
             with redirect_stdout(output_buffer):
                 print(f"开始处理论文: {paper_id}")
-                
+
                 # 获取论文信息
                 paper_info = self._database.get_paper_info(paper_id=paper_id)
                 if not paper_info:
@@ -1404,20 +1428,22 @@ class Completer:
                     print(f"\n✅ 论文 {paper_id} arXiv 元数据步骤结束")
                     return output_buffer.getvalue()
 
-                if only_mode == "venue":
+                if only_mode == "ai_info_based_arxiv_meta_info":
                     if not arxiv_id:
-                        print("非 arXiv 论文，跳过 venue")
+                        print("非 arXiv 论文，跳过 ai_info_based_arxiv_meta_info")
                         return output_buffer.getvalue()
-                    print("模式: 仅顶会标签（基于已有 arxiv_comments，使用 LLM）")
+                    print(
+                        "模式: 元数据侧 LLM（基于已有 arxiv_comments 解析顶会标签）"
+                    )
                     try:
                         paper_info = self._database.get_paper_info(paper_id=paper_id)
                         self._apply_arxiv_comment_venue(
                             paper_id, paper_info, use_llm_for_venue=True, phase="venue"
                         )
-                        print("✓ venue 处理完成")
+                        print("✓ arxiv_comments LLM 处理完成")
                     except Exception as e:
-                        print(f"✗ venue 处理失败: {e}")
-                    print(f"\n✅ 论文 {paper_id} venue 步骤结束")
+                        print(f"✗ arxiv_comments LLM 处理失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} ai_info_based_arxiv_meta_info 步骤结束")
                     return output_buffer.getvalue()
 
                 if only_mode == "download_pdf":
@@ -1488,14 +1514,14 @@ class Completer:
                     print(f"\n✅ 论文 {paper_id} 标题步骤结束")
                     return output_buffer.getvalue()
 
-                if only_mode == "ai":
-                    print("模式: 仅 AI 属性（需 paper.txt）")
+                if only_mode == "ai_info_based_paper":
+                    print("模式: 正文 LLM（按需下载 PDF→TXT，再 quyer_paper_info）")
                     try:
                         self._fetch_ai_attributes_by_paper_id(paper_id)
-                        print("✓ AI 属性步骤结束")
+                        print("✓ 正文 LLM 步骤结束")
                     except Exception as e:
-                        print(f"✗ AI 属性失败: {e}")
-                    print(f"\n✅ 论文 {paper_id} AI 属性步骤结束")
+                        print(f"✗ 正文 LLM 失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} 正文 LLM 步骤结束")
                     return output_buffer.getvalue()
 
                 # 1. 下载 PDF（如果需要）
@@ -1594,13 +1620,13 @@ if __name__ == "__main__":
 
     _ONLY_MODES = (
         "arxiv_metadata",
-        "venue",
+        "ai_info_based_arxiv_meta_info",
         "download_pdf",
         "pdf_to_txt",
         "abstract",
         "authors",
         "full_name",
-        "ai",
+        "ai_info_based_paper",
     )
 
     parser = argparse.ArgumentParser(
@@ -1608,15 +1634,15 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 原子步骤 (--only)，便于分步执行（与全量路径中的对应段一致）：
-  arxiv_metadata  批量 id_list 拉元数据并写库，再对每篇做 comment 步结案（不调 LLM）；随后可 --only venue
+  arxiv_metadata  批量 id_list 拉元数据并写库，再对每篇做 comment 步结案（不调 LLM）；随后可 --only ai_info_based_arxiv_meta_info
   download_pdf    仅下载 PDF 到缓存
   pdf_to_txt      仅转换：已有 paper.pdf → paper.txt
   abstract        与 arxiv_metadata 相同四类字段触发条件（仅批量拉元数据，不做 comment 步）
   authors         同上
   full_name       同上（有 arxiv_id 时）
-  ai              仅 LLM 抽取 AI 属性（需 paper.txt）
-  venue           仅用库内 arxiv_comments 调 LLM 打 venue 标签（须先有元数据/comment）
-  省略 --only 时按「待补全」列表跑全量合并补全（全量内仍顺序执行 comment 与 venue 两步）。""",
+  ai_info_based_paper        正文 LLM：若无 paper.txt 会先下载 PDF（arXiv 或 paper_url）再转 TXT，再 quyer_paper_info
+  ai_info_based_arxiv_meta_info     仅用库内 arxiv_comments 调 LLM 打顶会标签（短文本、低开销）
+  省略 --only 时按「待补全」列表跑全量合并补全（全量内仍顺序执行 comment 与顶会 LLM 两步）。""",
     )
     parser.add_argument(
         "--only",
@@ -1636,9 +1662,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--newest-limit",
         type=int,
-        default=200,
+        default=1000,
         metavar="N",
-        help="只处理全库按 date 倒序的前 N 篇与待补全列表的交集；0 表示不限制（默认 200）",
+        help="只处理全库按 date 倒序的前 N 篇与待补全列表的交集；0 表示不限制（默认 1000）",
     )
     parser.add_argument(
         "--db",

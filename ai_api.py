@@ -11,10 +11,19 @@ try:
 except ImportError:
     _OPENAI_AVAILABLE = False
 
-# Token 估算：通常 1 token ≈ 4 个字符（保守估计）
-# 模型最大上下文长度：131072 tokens
-# 预留一些空间给 prompt 和响应，实际文本限制设为 100000 tokens ≈ 400000 字符
-MAX_TEXT_LENGTH = 400000  # 字符数限制
+# 送入 quyer_paper_info 等的正文上限（字符）。论文关键信息多在篇首，过大则费 token / 易超时。
+# 默认约 12 万字符 ≈ 英文 2.5–3 万 token 量级（另需扣掉 system/user prompt 与回复）。
+# 需要更长正文时可设置环境变量 PAPER_MAP_MAX_PAPER_TEXT_CHARS（正整数）。
+def _max_paper_text_chars() -> int:
+    raw = os.environ.get("PAPER_MAP_MAX_PAPER_TEXT_CHARS", "120000").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 120_000
+    return n if n > 0 else 120_000
+
+
+MAX_TEXT_LENGTH = _max_paper_text_chars()
 
 
 def _build_chat_url(base_url: str) -> str:

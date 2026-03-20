@@ -2,7 +2,13 @@
 import { ref, watch } from 'vue'
 import type { Paper } from '@/types'
 import { Dialog, Badge, Button, Input } from '@/components/ui'
-import { formatDate, generateArxivLink } from '@/lib/utils'
+import {
+  formatDate,
+  generateArxivLink,
+  isProminentTagName,
+  prominentTagBadgeClassFor,
+  prominentTagShortLabel,
+} from '@/lib/utils'
 import { ExternalLink, Copy, Check, Tag, Building2, GraduationCap, User } from 'lucide-vue-next'
 
 interface Props {
@@ -127,8 +133,14 @@ watch(() => props.open, (open) => {
           标签
         </div>
         <div class="flex flex-wrap gap-1 mb-2">
-          <Badge v-for="tag in paper.tags" :key="tag">
-            {{ tag }}
+          <Badge
+            v-for="tag in paper.tags"
+            :key="tag"
+            variant="secondary"
+            :class="isProminentTagName(tag) ? prominentTagBadgeClassFor(tag) : ''"
+            :title="tag"
+          >
+            {{ isProminentTagName(tag) ? prominentTagShortLabel(tag) : tag }}
           </Badge>
           <span v-if="paper.tags.length === 0" class="text-sm text-muted-foreground">
             暂无标签
