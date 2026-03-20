@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { watchDebounced } from '@vueuse/core'
 import MatrixTable from '@/components/matrix/MatrixTable.vue'
+import MatrixTagRuleBar from '@/components/matrix/MatrixTagRuleBar.vue'
 import { Button, Badge } from '@/components/ui'
 import * as api from '@/api'
 import { RefreshCw, User } from 'lucide-vue-next'
@@ -9,6 +11,7 @@ const headers = ref<string[]>([])
 const rows = ref<any[]>([])
 const headerRules = ref<Record<string, string[]>>({})
 const loading = ref(false)
+const matrixTagRule = ref('venue.*')
 
 /** 按名称分组，收集所有 match_rule */
 function buildHeaderRules(items: { name: string; match_rule: string }[]): Record<string, string[]> {
@@ -24,7 +27,7 @@ async function fetchData() {
   loading.value = true
   try {
     const [matrixData, watched] = await Promise.all([
-      api.getAuthorMatrix(),
+      api.getAuthorMatrix({ tag_rule: matrixTagRule.value }),
       api.getWatchedAuthors(),
     ])
     headers.value = matrixData.authors
@@ -38,6 +41,8 @@ async function fetchData() {
 }
 
 onMounted(fetchData)
+
+watchDebounced(matrixTagRule, () => fetchData(), { debounce: 400 })
 </script>
 
 <template>
@@ -52,7 +57,8 @@ onMounted(fetchData)
             关注作者 <span class="text-muted-foreground font-normal">· 显示关注作者发表的论文矩阵</span>
           </h1>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
+        <div class="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          <MatrixTagRuleBar v-model="matrixTagRule" />
           <Badge variant="secondary">{{ headers.length }} 位作者</Badge>
           <Badge variant="outline">{{ rows.length }} 篇论文</Badge>
           <Button variant="outline" size="sm" :disabled="loading" @click="fetchData">

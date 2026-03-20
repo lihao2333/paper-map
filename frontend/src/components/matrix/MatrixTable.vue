@@ -4,7 +4,7 @@ import { HeaderRulesTooltip } from '@/components/ui'
 import PaperCellPanel from '@/components/matrix/PaperCellPanel.vue'
 import type { HoverInfo } from '@/types'
 import * as api from '@/api'
-import { formatMonth, generateArxivLink, getMonthKey } from '@/lib/utils'
+import { formatAbbrevWithVenueTags, formatMonth, generateArxivLink, getMonthKey } from '@/lib/utils'
 
 const STORAGE_KEY = 'matrix-table-col-widths'
 const VISITED_KEY = 'matrix-table-visited-papers'
@@ -253,6 +253,11 @@ function getCellContent(cell: MatrixCell | undefined): string {
   return cell.alias || cell.full_name || ''
 }
 
+function getCellDisplayContent(cell: MatrixCell | undefined, row: MatrixRow): string {
+  const base = getCellContent(cell)
+  return formatAbbrevWithVenueTags(base, row.hover_info ?? null)
+}
+
 /** 分层表头：支持多级标签（a、a.b、a.b.c 等），每行显示一级，含 colspan 分组 */
 interface HeaderLevelCell {
   text: string
@@ -465,7 +470,7 @@ async function removeTag(paperId: string, tagId: number) {
                 <PaperCellPanel
                   v-if="subRow[header]"
                   :hover-info="getEffectiveHoverInfo(subRow[header]!.row, subRow[header]!.cell)"
-                  :cell-content="getCellContent(subRow[header]!.cell)"
+                  :cell-content="getCellDisplayContent(subRow[header]!.cell, subRow[header]!.row)"
                   :is-visited="isVisited(subRow[header]!.row.paper_id)"
                   :paper-id="subRow[header]!.row.paper_id"
                   :on-open-link="() => openLink(subRow[header]!.row)"

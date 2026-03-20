@@ -131,6 +131,10 @@ async def get_tag(tag_id: int, db: Database = Depends(get_db)):
 async def get_tag_papers(tag_id: int, db: Database = Depends(get_db)):
     """获取标签关联的论文"""
     papers = db.get_papers_by_tag(tag_id)
+    for p in papers:
+        if "tags" not in p:
+            paper_tags = db.get_paper_tags(p["paper_id"])
+            p["tags"] = [t["tag_name"] for t in paper_tags]
     return papers
 
 

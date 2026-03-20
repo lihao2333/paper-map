@@ -1553,6 +1553,28 @@ class Database:
                     "tag_name": tag_name
                 })
             return results
+
+    def get_paper_ids_matching_tag_glob(self, glob_pattern: str) -> set:
+        """
+        至少带有一个标签名匹配 glob 的论文 ID 集合（与关注 match_rule 相同：* -> %, ? -> _）。
+        例如 venue.* 匹配 venue.NeurIPS、venue.ICLR 等。
+        """
+        p = (glob_pattern or "").strip()
+        if not p:
+            return set()
+        sql_like = p.replace("*", "%").replace("?", "_")
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT pt.paper_id
+                FROM paper_tag pt
+                INNER JOIN tag t ON pt.tag_id = t.tag_id
+                WHERE t.tag_name LIKE ?
+                """,
+                (sql_like,),
+            )
+            return {row[0] for row in cursor.fetchall()}
     
     def get_papers_by_tag(self, tag_id):
         """

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Paper } from '@/types'
 import { Badge, Tooltip, PaperTooltip } from '@/components/ui'
-import { formatDate, truncate, generateArxivLink } from '@/lib/utils'
+import { formatAbbrevWithVenueTags, formatDate, truncate, generateArxivLink } from '@/lib/utils'
 import { ExternalLink, Github } from 'lucide-vue-next'
 
 interface Props {
@@ -69,7 +69,12 @@ const emit = defineEmits<{
               <Tooltip :content="paper.full_name || paper.alias">
                 <div>
                   <div class="text-sm font-medium">
-                    {{ paper.alias || truncate(paper.full_name, 40) }}
+                    {{
+                      formatAbbrevWithVenueTags(
+                        paper.alias || truncate(paper.full_name, 40),
+                        paper.tags,
+                      )
+                    }}
                   </div>
                   <div v-if="paper.alias && paper.full_name" class="text-xs text-muted-foreground">
                     {{ truncate(paper.full_name, 60) }}

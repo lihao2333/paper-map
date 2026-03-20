@@ -51,19 +51,28 @@ export async function completeSummaries(): Promise<{ completed: number; total: n
   return data
 }
 
-// Matrix
-export async function getCompanyMatrix(): Promise<{ companies: string[]; papers: any[] }> {
-  const { data } = await api.get('/matrix/companies')
+// Matrix（tag_rule：标签 glob；缺省 venue.*；传空字符串表示不按标签筛选）
+export async function getCompanyMatrix(opts?: {
+  tag_rule?: string
+}): Promise<{ companies: string[]; papers: any[] }> {
+  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
+  const { data } = await api.get('/matrix/companies', { params: { tag_rule } })
   return data
 }
 
-export async function getUniversityMatrix(): Promise<{ universities: string[]; papers: any[] }> {
-  const { data } = await api.get('/matrix/universities')
+export async function getUniversityMatrix(opts?: {
+  tag_rule?: string
+}): Promise<{ universities: string[]; papers: any[] }> {
+  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
+  const { data } = await api.get('/matrix/universities', { params: { tag_rule } })
   return data
 }
 
-export async function getAuthorMatrix(): Promise<{ authors: string[]; papers: any[] }> {
-  const { data } = await api.get('/matrix/authors')
+export async function getAuthorMatrix(opts?: {
+  tag_rule?: string
+}): Promise<{ authors: string[]; papers: any[] }> {
+  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
+  const { data } = await api.get('/matrix/authors', { params: { tag_rule } })
   return data
 }
 

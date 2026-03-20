@@ -5,7 +5,14 @@ import TagTree from '@/components/tags/TagTree.vue'
 import { Card, Button, Badge } from '@/components/ui'
 import * as api from '@/api'
 import { RefreshCw, ExternalLink, Github } from 'lucide-vue-next'
-import { formatDate, formatMonth, generateArxivLink, getMonthKey, truncate } from '@/lib/utils'
+import {
+  formatAbbrevWithVenueTags,
+  formatDate,
+  formatMonth,
+  generateArxivLink,
+  getMonthKey,
+  truncate,
+} from '@/lib/utils'
 
 const tagTree = ref<TagTreeNode[]>([])
 const selectedTag = ref<TagTreeNode | null>(null)
@@ -145,7 +152,7 @@ onMounted(fetchTagTree)
                       <span class="font-mono">{{ paper.arxiv_id || paper.paper_id }}</span>
                     </div>
                     <h4 class="font-medium mb-1">
-                      {{ paper.alias || paper.full_name }}
+                      {{ formatAbbrevWithVenueTags(paper.alias || paper.full_name, paper.tags) }}
                     </h4>
                     <p v-if="paper.summary" class="text-sm text-muted-foreground">
                       {{ truncate(paper.summary, 200) }}

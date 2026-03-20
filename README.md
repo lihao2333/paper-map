@@ -136,6 +136,8 @@ paper-map/
 | GET    | /api/matrix/companies     | 公司矩阵 |
 | GET    | /api/matrix/universities  | 高校矩阵 |
 | GET    | /api/matrix/authors       | 作者矩阵 |
+
+矩阵接口支持查询参数 `tag_rule`：标签名 glob（`*`、`?` 转为 SQL LIKE），**缺省为 `venue.*`**（仅保留带顶会类标签的论文）；传 **`tag_rule=` 空字符串** 表示不按标签筛选。
 | GET    | /api/tags                 | 标签列表 |
 | GET    | /api/tags/tree            | 标签树   |
 | POST   | /api/collect              | 收集论文 |

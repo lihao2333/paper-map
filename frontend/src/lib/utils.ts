@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import type { HoverInfo } from '@/types'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -49,4 +50,41 @@ export function generateArxivLink(arxivId: string | null, paperUrl: string): str
     return `https://arxiv.org/abs/${arxivId}`
   }
   return paperUrl
+}
+
+function collectVenueTagNamesFromHover(h: HoverInfo): string[] {
+  const names = new Set<string>()
+  for (const t of h.tags ?? []) {
+    if (t.tag_name.startsWith('venue.')) names.add(t.tag_name)
+  }
+  for (const n of h.tag_names ?? []) {
+    if (n.startsWith('venue.')) names.add(n)
+  }
+  return [...names].sort()
+}
+
+function collectVenueTagNamesFromStrings(tags: string[]): string[] {
+  return [...new Set(tags.filter((t) => t.startsWith('venue.')))].sort()
+}
+
+/**
+ * 若有以 venue. 开头的标签，在缩写/短标题前显示 [venue.xxx] …（多个 venue 则多个方括号，空格分隔）
+ */
+export function formatAbbrevWithVenueTags(
+  abbrev: string,
+  tagSource: string[] | HoverInfo | null | undefined,
+): string {
+  const base = (abbrev ?? '').trim()
+  if (!base) return ''
+  let venueNames: string[]
+  if (!tagSource) {
+    venueNames = []
+  } else if (Array.isArray(tagSource)) {
+    venueNames = collectVenueTagNamesFromStrings(tagSource)
+  } else {
+    venueNames = collectVenueTagNamesFromHover(tagSource)
+  }
+  if (!venueNames.length) return base
+  const prefix = venueNames.map((v) => `[${v}]`).join(' ')
+  return `${prefix} ${base}`
 }
