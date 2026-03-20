@@ -1,6 +1,6 @@
 import os
 import requests
-from typing import List, Optional
+from typing import Callable, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from ai_api import AiApi
@@ -23,31 +23,115 @@ class Completer:
         self._ai_api = AiApi()
         os.makedirs(os.path.dirname(self._path) if os.path.dirname(self._path) else '.', exist_ok=True)
 
+    def _arxiv_metadata_need_api(self, paper_info: dict) -> bool:
+        """
+        是否需调用 arXiv API 拉取「记录元数据」：摘要、作者、标题、arxiv:comment。
+        任一项按下面规则视为缺失则返回 True（一次请求可写回全部字段）。不含 venue/LLM。
+        """
+        arxiv_id = paper_info.get("arxiv_id")
+        if not arxiv_id:
+            return False
+        if not paper_info.get("abstract"):
+            return True
+        if not paper_info.get("author_names"):
+            return True
+        if not paper_info.get("full_name"):
+            return True
+        ac = paper_info.get("arxiv_comments")
+        if ac is None:
+            return True
+        if ac == "" and not paper_info.get("is_comment_used"):
+            return True
+        return False
+
+    @staticmethod
+    def _paper_info_apply_arxiv_metadata(paper_info: dict, meta: dict) -> None:
+        paper_info["abstract"] = meta["abstract"]
+        paper_info["author_names"] = meta["author_names"]
+        paper_info["full_name"] = meta["full_name"]
+        paper_info["arxiv_comments"] = meta["arxiv_comments"]
+
+    def _fetch_arxiv_metadata_row_for_batch(
+        self, paper_id: str, paper_info: dict
+    ) -> Optional[dict]:
+        """
+        若需 API，则请求一次并就地更新 paper_info；返回 update_paper_info 用的一行 dict，失败返回 None。
+        """
+        if not self._arxiv_metadata_need_api(paper_info):
+            return None
+        arxiv_id = paper_info["arxiv_id"]
+        try:
+            print(
+                f"Fetching arXiv metadata (abstract/authors/title/comment) for {arxiv_id}",
+                flush=True,
+            )
+            meta = self._arxiv_api.fetch_record_metadata(arxiv_id)
+            self._paper_info_apply_arxiv_metadata(paper_info, meta)
+            return {
+                "paper_id": paper_id,
+                "arxiv_id": arxiv_id,
+                "abstract": meta["abstract"],
+                "author_names": meta["author_names"],
+                "full_name": meta["full_name"],
+                "arxiv_comments": meta["arxiv_comments"],
+            }
+        except Exception as e:
+            print(f"✗ arXiv 元数据拉取失败 {paper_id}: {e}")
+            return None
+
+    def _ensure_arxiv_metadata_from_api(
+        self,
+        paper_id: str,
+        paper_info: dict,
+        updates: Optional[dict] = None,
+    ) -> bool:
+        """
+        与 _fetch_arxiv_metadata_row_for_batch 相同触发条件；成功返回 True。
+        updates 非 None 时把一行追加到 updates['paper_info_updates']，否则直接写库。
+        """
+        row = self._fetch_arxiv_metadata_row_for_batch(paper_id, paper_info)
+        if row is None:
+            return not self._arxiv_metadata_need_api(paper_info)
+        if updates is not None:
+            updates["paper_info_updates"].append(row)
+        else:
+            self._database.update_paper_info([row])
+        return True
+
+    def _get_paper_ids_need_arxiv_metadata(self) -> List[str]:
+        out: List[str] = []
+        for paper_id in self._database.get_paper_ids():
+            paper_info = self._database.get_paper_info(paper_id=paper_id)
+            if paper_info and self._arxiv_metadata_need_api(paper_info):
+                out.append(paper_id)
+        return out
+
     def _process_arxiv_comment_venue(
         self,
         paper_id: str,
         paper_info: dict,
         use_llm_for_venue: bool = True,
         *,
-        phase: str = "both",
+        phase: str,
     ):
         """
-        拉取 arXiv comment（若尚未拉过）、解析顶会并返回待写入数据。
-        会就地更新 paper_info 中的 arxiv_comments。
+        arXiv comment 落库/结案 与 顶会（venue）解析；不在此函数内调用 arXiv API。
+        phase=arxiv_comment 前应由调用方先执行 _ensure_arxiv_metadata_from_api /
+        _fetch_arxiv_metadata_row_for_batch（一次 API 写入摘要/作者/标题/arxiv:comment）。
+        会就地更新 paper_info 中的 arxiv_comments（随 LLM 或结案分支）。
         is_comment_used 表示「venue/comment 解析流程已结束」，单独一条 update，与 arxiv_comments 不同条：
         - 仅写入/更新 arxiv_comments（含仅拉取、或 LLM 未就绪/失败）时不写 is_comment_used。
         - LLM 成功跑完 extract 后写 is_comment_used；comment 经 API 确认为空时写 is_comment_used（无可解析内容）。
         返回 (paper_info_rows, tag_names)。
 
-        phase:
-        - both: 需要时拉取 comment，再按需 LLM 解析顶会（默认，用于全量补全）。
-        - fetch: 仅调 arXiv API 写入 arxiv_comments，绝不调用 LLM；有正文时不写 is_comment_used，留待 venue。
-        - venue: 不拉取 API，仅用库内已有 comment 做顶会解析；arxiv_comments 为 NULL 时跳过（需先 fetch）。
+        phase（两步独立，勿混为同一概念）:
+        - arxiv_comment: 不调 LLM；据已写入的 arxiv_comments 做持久化/结案（comment 步）。
+        - venue: 仅用库内已有 comment 做顶会解析（LLM）；arxiv_comments 为 NULL 时跳过。
 
-        use_llm_for_venue: 在 both/venue 下是否用 LLM；未配置或调用失败时只写 comment，不写 is_comment_used（有正文时可下次重试）。
+        use_llm_for_venue: 仅在 phase=venue 时生效；未配置或调用失败时只写 comment，不写 is_comment_used（有正文时可下次重试）。
         """
-        if phase not in ("both", "fetch", "venue"):
-            phase = "both"
+        if phase not in ("arxiv_comment", "venue"):
+            phase = "arxiv_comment"
 
         arxiv_id = paper_info.get("arxiv_id")
         if not arxiv_id:
@@ -61,21 +145,10 @@ class Completer:
                 return [], []
             if paper_info.get("arxiv_comments") is None:
                 return [], []
-        elif phase in ("both", "fetch"):
-            # NULL = 未拉取；"" 且未标记 venue 完成时仍拉一次（修复历史上把 NULL 读成 "" 导致从未请求 API）
-            ac_existing = paper_info.get("arxiv_comments")
-            need_fetch = ac_existing is None or (
-                ac_existing == "" and not paper_info.get("is_comment_used")
-            )
-            if need_fetch:
-                try:
-                    print(f"Fetching arXiv comment for {arxiv_id}", flush=True)
-                    c = self._arxiv_api.get_comment(arxiv_id)
-                    upd_fields["arxiv_comments"] = c
-                    paper_info["arxiv_comments"] = c
-                except Exception as e:
-                    print(f"✗ arXiv comment 获取失败 {paper_id}: {e}")
-                    return [], []
+        elif phase == "arxiv_comment":
+            # arxiv:comment 与摘要/作者/标题同属一次 arXiv API 元数据拉取，由调用方先执行
+            # _ensure_arxiv_metadata_from_api / _fetch_arxiv_metadata_row_for_batch，此处不再单独请求 API。
+            pass
 
         if paper_info.get("is_comment_used"):
             if upd_fields:
@@ -86,7 +159,7 @@ class Completer:
         stripped = (comment or "").strip()
 
         use_llm = (
-            phase != "fetch"
+            phase == "venue"
             and use_llm_for_venue
             and self._ai_api.is_llm_configured()
         )
@@ -136,6 +209,9 @@ class Completer:
             elif phase == "venue":
                 # 库内已有空 comment，仅结案
                 rows.extend(_row_is_comment_used_only())
+            elif phase == "arxiv_comment":
+                # 元数据已在调用方一次 API 写入 arxiv_comments（可能为空）；此处不再带 upd_fields
+                rows.extend(_row_is_comment_used_only())
             return rows, tag_names
 
         if not use_llm:
@@ -158,9 +234,9 @@ class Completer:
         paper_info: dict,
         use_llm_for_venue: bool = True,
         *,
-        phase: str = "both",
+        phase: str,
     ):
-        """写入数据库并打标签（用于非 batch 路径）"""
+        """写入数据库并打标签（用于非 batch 路径）；phase 须为 arxiv_comment 或 venue。"""
         rows, tags = self._process_arxiv_comment_venue(
             paper_id,
             paper_info,
@@ -270,26 +346,16 @@ class Completer:
             
             print(f"\nPDF download completed: {success_count} succeeded, {error_count} failed")
 
-        # 2. 下载摘要（只处理 arXiv 论文）
-        arxiv_ids = self._database.get_arxiv_ids_having_no_abstarct()
-        print(f"Downloading {len(arxiv_ids)} abstracts (arXiv papers only)")
-        for arxiv_id in arxiv_ids:
+        # 2. arXiv 元数据（摘要/作者/标题/arxiv:comment）每篇至多一次 API
+        meta_paper_ids = self._get_paper_ids_need_arxiv_metadata()
+        print(f"Fetching arXiv metadata for {len(meta_paper_ids)} papers")
+        for paper_id in meta_paper_ids:
             try:
-                self._download_abstract(arxiv_id)
+                paper_info = self._database.get_paper_info(paper_id=paper_id)
+                if paper_info:
+                    self._ensure_arxiv_metadata_from_api(paper_id, paper_info, updates=None)
             except Exception as e:
-                print(f"Error downloading abstract for {arxiv_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
-        # 2.5. 获取作者信息（只处理 arXiv 论文）
-        arxiv_ids = self._database.get_arxiv_ids_having_no_authors()
-        print(f"Fetching {len(arxiv_ids)} author names (arXiv papers only)")
-        for arxiv_id in arxiv_ids:
-            try:
-                self._fetch_author_names(arxiv_id)
-            except Exception as e:
-                print(f"Error fetching author names for {arxiv_id}: {e}")
+                print(f"Error fetching arXiv metadata for {paper_id}: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -403,24 +469,14 @@ class Completer:
     
     def _fetch_full_name_by_paper_id(self, paper_id: str):
         """
-        获取论文标题（arXiv 从 API，非 arXiv 从 PDF）
+        获取论文标题：有 arxiv_id 时与其它元数据共用一次 arXiv API；非 arXiv 暂无实现。
         """
-        print(f"Fetching full name for {paper_id}")
         paper_info = self._database.get_paper_info(paper_id=paper_id)
         if not paper_info:
             print(f"Paper info not found for {paper_id}")
             return
-        
-        arxiv_id = paper_info.get("arxiv_id")
-        if arxiv_id:
-            # arXiv 论文，从 API 获取
-            full_name = self._arxiv_api.get_title(arxiv_id)
-        
-            self._database.update_paper_info([{
-                "paper_id": paper_id,
-                "arxiv_id": arxiv_id,
-                "full_name": full_name,
-            }])
+        if paper_info.get("arxiv_id"):
+            self._ensure_arxiv_metadata_from_api(paper_id, paper_info, updates=None)
 
     def _convert_pdf_to_txt(self, paper_id: str):
         """
@@ -470,32 +526,18 @@ class Completer:
                     f.write(chunk)
 
     def _download_abstract(self, arxiv_id: str):
-        """
-        Download abstract from arxiv using arxiv API and insert to database
-        """
-        print(f"Downloading abstract for {arxiv_id}")
-        abstract = self._arxiv_api.get_abstarct(arxiv_id)   
-        self._database.update_paper_abstract([(arxiv_id, abstract)])
-
-    def _fetch_author_names(self, arxiv_id: str):
-        """
-        Fetch author names from arxiv using arxiv API and insert to database
-        """
-        print(f"Fetching author names for {arxiv_id}")
-        author_names = self._arxiv_api.get_author_names(arxiv_id)
-        
-        # 获取 paper_id
+        """与其它 arXiv 元数据共用一次 API。"""
         paper_info = self._database.get_paper_info(arxiv_id=arxiv_id)
         if not paper_info:
             raise ValueError(f"Paper info not found for arxiv_id: {arxiv_id}")
-        paper_id = paper_info["paper_id"]
-        
-        # 更新作者信息
-        self._database.update_paper_info([{
-            "paper_id": paper_id,
-            "arxiv_id": arxiv_id,
-            "author_names": author_names
-        }])
+        self._ensure_arxiv_metadata_from_api(paper_info["paper_id"], paper_info, updates=None)
+
+    def _fetch_author_names(self, arxiv_id: str):
+        """与其它 arXiv 元数据共用一次 API。"""
+        paper_info = self._database.get_paper_info(arxiv_id=arxiv_id)
+        if not paper_info:
+            raise ValueError(f"Paper info not found for arxiv_id: {arxiv_id}")
+        self._ensure_arxiv_metadata_from_api(paper_info["paper_id"], paper_info, updates=None)
     
     def _get_paper_ids_need_complete(self) -> List[str]:
         """
@@ -531,8 +573,8 @@ class Completer:
             # 检查是否需要获取作者信息（arXiv 论文，不需要 PDF）
             need_authors = arxiv_id and missing_authors
 
-            # arXiv comment / 顶会标签：未拉取 comment 或未做解析标记
-            need_comment_venue = arxiv_id and (
+            # arXiv：comment 未落库或 venue 未结案（两步可分开跑，待补全集合仍用同一条件）
+            need_arxiv_comment_or_venue = arxiv_id and (
                 paper_info.get("arxiv_comments") is None
                 or not paper_info.get("is_comment_used")
             )
@@ -559,7 +601,7 @@ class Completer:
             if (
                 need_abstract
                 or need_authors
-                or need_comment_venue
+                or need_arxiv_comment_or_venue
                 or need_full_name
                 or need_ai_attributes
                 or need_pdf
@@ -595,6 +637,16 @@ class Completer:
             out.append(paper_id)
         return out
 
+    def _get_paper_ids_need_pdf_to_txt(self) -> List[str]:
+        """本地已有 paper.pdf、尚无 paper.txt 的论文（用于原子步骤 pdf_to_txt）"""
+        out: List[str] = []
+        for paper_id in self._database.get_paper_ids():
+            pdf_path = os.path.join(self._path, paper_id, "paper.pdf")
+            txt_path = os.path.join(self._path, paper_id, "paper.txt")
+            if os.path.isfile(pdf_path) and not os.path.isfile(txt_path):
+                out.append(paper_id)
+        return out
+
     def _paper_ids_sorted_by_date_desc(self) -> List[str]:
         """全库 paper_id：先有 arxiv 的按 arxiv_id 再 date；无 arxiv 的靠后按 date（与 paper_list_sort_key 一致）。"""
         from database import paper_list_sort_key
@@ -627,7 +679,7 @@ class Completer:
     def _complete_single_paper_internal_batch_comment_phase(
         self, paper_id: str, *, phase: str
     ):
-        """批量路径：仅 comment 拉取（phase=fetch）或仅顶会解析（phase=venue）"""
+        """批量路径：仅 arxiv_comment（含按需一次 API）或仅 venue（不调 API）"""
         updates = {
             "paper_info_updates": [],
             "abstract_updates": [],
@@ -640,6 +692,13 @@ class Completer:
                 return updates
             if not paper_info.get("arxiv_id"):
                 return updates
+            if phase == "arxiv_comment":
+                if self._arxiv_metadata_need_api(paper_info):
+                    row = self._fetch_arxiv_metadata_row_for_batch(paper_id, paper_info)
+                    if row:
+                        updates["paper_info_updates"].append(row)
+                    else:
+                        return updates
             pi_rows, tag_names = self._process_arxiv_comment_venue(
                 paper_id,
                 paper_info,
@@ -656,53 +715,6 @@ class Completer:
             print(f"\n❌ arXiv comment/venue 处理 {paper_id} 时出错: {e}")
             traceback.print_exc()
         return updates
-    
-    def _fetch_abstract_data(self, arxiv_id: str, paper_id: str):
-        """
-        获取摘要数据（不写入数据库）
-        
-        Returns:
-            dict with abstract data or None if failed
-        """
-        try:
-            print(f"Downloading abstract for {arxiv_id}")
-            abstract = self._arxiv_api.get_abstarct(arxiv_id)
-            return {"paper_id": paper_id, "arxiv_id": arxiv_id, "abstract": abstract}
-        except Exception as e:
-            print(f"✗ 摘要下载失败 {paper_id}: {e}")
-            return None
-    
-    def _fetch_author_names_data(self, arxiv_id: str, paper_id: str):
-        """
-        获取作者信息数据（不写入数据库）
-        
-        Returns:
-            dict with author_names data or None if failed
-        """
-        try:
-            print(f"Fetching author names for {arxiv_id}")
-            author_names = self._arxiv_api.get_author_names(arxiv_id)
-            return {"paper_id": paper_id, "arxiv_id": arxiv_id, "author_names": author_names}
-        except Exception as e:
-            print(f"✗ 作者信息获取失败 {paper_id}: {e}")
-            return None
-    
-    def _fetch_full_name_data(self, paper_id: str, arxiv_id: str = None):
-        """
-        获取标题数据（不写入数据库）
-        
-        Returns:
-            dict with full_name data or None if failed
-        """
-        try:
-            print(f"Fetching full name for {paper_id}")
-            if arxiv_id:
-                full_name = self._arxiv_api.get_title(arxiv_id)
-                return {"paper_id": paper_id, "arxiv_id": arxiv_id, "full_name": full_name}
-        except Exception as e:
-            print(f"✗ 标题获取失败 {paper_id}: {e}")
-            return None
-        return None
     
     def _fetch_ai_attributes_data(self, paper_id: str, paper_info: dict):
         """
@@ -754,48 +766,28 @@ class Completer:
             
             arxiv_id = paper_info.get("arxiv_id")
             
-            # 1. 下载摘要（arXiv 论文，不需要 PDF）
+            # 1. arXiv 元数据（摘要/作者/标题/arxiv:comment）一次 API；venue 解析仍单独走 LLM
             if arxiv_id:
-                if not paper_info.get("abstract"):
-                    try:
-                        self._download_abstract(arxiv_id)
-                        # 重新获取论文信息，因为摘要已更新
-                        paper_info = self._database.get_paper_info(paper_id=paper_id)
-                    except Exception as e:
-                        print(f"✗ 摘要下载失败 {paper_id}: {e}")
+                try:
+                    self._ensure_arxiv_metadata_from_api(paper_id, paper_info, updates=None)
+                    paper_info = self._database.get_paper_info(paper_id=paper_id)
+                except Exception as e:
+                    print(f"✗ arXiv 元数据失败 {paper_id}: {e}")
             
-            # 2. 获取作者信息（arXiv 论文，不需要 PDF）
-            if arxiv_id:
-                if not paper_info.get("author_names"):
-                    try:
-                        self._fetch_author_names(arxiv_id)
-                        # 重新获取论文信息，因为作者信息已更新
-                        paper_info = self._database.get_paper_info(paper_id=paper_id)
-                    except Exception as e:
-                        print(f"✗ 作者信息获取失败 {paper_id}: {e}")
-            
-            # 2.5 arXiv comment / 顶会标签
+            # 2. arXiv：comment 步与 venue 步顺序执行（不再在此处单独打 arXiv API）
             if arxiv_id:
                 try:
                     paper_info = self._database.get_paper_info(paper_id=paper_id)
-                    self._apply_arxiv_comment_venue(paper_id, paper_info)
+                    self._apply_arxiv_comment_venue(
+                        paper_id, paper_info, phase="arxiv_comment"
+                    )
+                    paper_info = self._database.get_paper_info(paper_id=paper_id)
+                    self._apply_arxiv_comment_venue(paper_id, paper_info, phase="venue")
                 except Exception as e:
                     print(f"✗ arXiv comment/venue 处理失败 {paper_id}: {e}")
-            
-            # 3. 获取标题（arXiv 论文不需要 PDF，非 arXiv 论文可能需要 PDF）
             paper_info = self._database.get_paper_info(paper_id=paper_id)
-            if not paper_info.get("full_name"):
-                # arXiv 论文可以从 API 获取，不需要 PDF
-                if arxiv_id:
-                    try:
-                        self._fetch_full_name_by_paper_id(paper_id)
-                        paper_info = self._database.get_paper_info(paper_id=paper_id)
-                    except Exception as e:
-                        print(f"✗ 标题获取失败 {paper_id}: {e}")
-                # 非 arXiv 论文可能需要从 PDF 获取，但先尝试其他方法
-                # 如果后续需要 AI 属性，会下载 PDF
             
-            # 4. 检查是否需要 AI 属性
+            # 3. 检查是否需要 AI 属性
             paper_info = self._database.get_paper_info(paper_id=paper_id)
             missing_fields = []
             if not paper_info.get("abstract"):
@@ -888,56 +880,33 @@ class Completer:
             
             arxiv_id = paper_info.get("arxiv_id")
             
-            # 1. 下载摘要（arXiv 论文，不需要 PDF）
+            # 1. arXiv 元数据（摘要/作者/标题/arxiv:comment）一次 API
             if arxiv_id:
-                if not paper_info.get("abstract"):
-                    abstract_data = self._fetch_abstract_data(arxiv_id, paper_id)
-                    if abstract_data:
-                        updates["abstract_updates"].append((arxiv_id, abstract_data["abstract"]))
-                        # 更新本地 paper_info，避免重复获取
-                        paper_info["abstract"] = abstract_data["abstract"]
+                row = self._fetch_arxiv_metadata_row_for_batch(paper_id, paper_info)
+                if row:
+                    updates["paper_info_updates"].append(row)
             
-            # 2. 获取作者信息（arXiv 论文，不需要 PDF）
-            if arxiv_id:
-                if not paper_info.get("author_names"):
-                    author_data = self._fetch_author_names_data(arxiv_id, paper_id)
-                    if author_data:
-                        updates["paper_info_updates"].append({
-                            "paper_id": paper_id,
-                            "arxiv_id": arxiv_id,
-                            "author_names": author_data["author_names"]
-                        })
-                        # 更新本地 paper_info
-                        paper_info["author_names"] = author_data["author_names"]
-            
-            # 2.5 arXiv comment / 顶会标签
+            # 2. arXiv：comment 步与 venue 步（不再单独打 arXiv API；paper_info 已由上文就地更新）
             if arxiv_id:
                 try:
-                    pi_rows, tag_names = self._process_arxiv_comment_venue(paper_id, paper_info)
+                    pi_rows, tag_names = self._process_arxiv_comment_venue(
+                        paper_id, paper_info, phase="arxiv_comment"
+                    )
                     if pi_rows:
                         updates["paper_info_updates"].extend(pi_rows)
                     for t in tag_names:
                         updates["tag_updates"].append((paper_id, t))
+                    pi_rows2, tag_names2 = self._process_arxiv_comment_venue(
+                        paper_id, paper_info, phase="venue"
+                    )
+                    if pi_rows2:
+                        updates["paper_info_updates"].extend(pi_rows2)
+                    for t in tag_names2:
+                        updates["tag_updates"].append((paper_id, t))
                 except Exception as e:
                     print(f"✗ arXiv comment/venue 处理失败 {paper_id}: {e}")
             
-            # 3. 获取标题（arXiv 论文不需要 PDF，非 arXiv 论文可能需要 PDF）
-            if not paper_info.get("full_name"):
-                # arXiv 论文可以从 API 获取，不需要 PDF
-                if arxiv_id:
-                    full_name_data = self._fetch_full_name_data(paper_id, arxiv_id)
-                    if full_name_data:
-                        updates["paper_info_updates"].append({
-                            "paper_id": paper_id,
-                            "arxiv_id": arxiv_id,
-                            "full_name": full_name_data["full_name"]
-                        })
-                        # 更新本地 paper_info
-                        paper_info["full_name"] = full_name_data["full_name"]
-                # 非 arXiv 论文可能需要从 PDF 获取，但先尝试其他方法
-                # 如果后续需要 AI 属性，会下载 PDF
-            
-            # 4. 检查是否需要 AI 属性
+            # 3. 检查是否需要 AI 属性
             missing_fields = []
             if not paper_info.get("abstract"):
                 missing_fields.append("abstract")
@@ -1013,6 +982,92 @@ class Completer:
         
         return updates
 
+    def _complete_single_paper_internal_batch_atomic(self, paper_id: str, step: str):
+        """
+        单步补全（批量路径）：只执行 step，返回与其它 batch 相同的 updates 结构。
+        step: download_pdf | pdf_to_txt | abstract | authors | full_name | ai
+        """
+        updates = {
+            "paper_info_updates": [],
+            "abstract_updates": [],
+            "tag_updates": [],
+        }
+        try:
+            paper_info = self._database.get_paper_info(paper_id=paper_id)
+            if not paper_info:
+                print(f"错误: 论文信息未找到: {paper_id}")
+                return updates
+            arxiv_id = paper_info.get("arxiv_id")
+
+            if step == "download_pdf":
+                self._download_pdf(paper_id, arxiv_id)
+                return updates
+
+            if step == "pdf_to_txt":
+                pdf_path = os.path.join(self._path, paper_id, "paper.pdf")
+                if not os.path.isfile(pdf_path):
+                    print(f"跳过 {paper_id}: 无 paper.pdf")
+                    return updates
+                self._convert_pdf_to_txt(paper_id)
+                return updates
+
+            if step == "arxiv_metadata":
+                if not arxiv_id:
+                    return updates
+                row = self._fetch_arxiv_metadata_row_for_batch(paper_id, paper_info)
+                if row:
+                    updates["paper_info_updates"].append(row)
+                return updates
+
+            if step in ("abstract", "authors", "full_name"):
+                if not arxiv_id:
+                    if step == "full_name":
+                        print(f"跳过 {paper_id}: 无 arxiv_id")
+                    return updates
+                if not self._arxiv_metadata_need_api(paper_info):
+                    return updates
+                row = self._fetch_arxiv_metadata_row_for_batch(paper_id, paper_info)
+                if row:
+                    updates["paper_info_updates"].append(row)
+                return updates
+
+            if step == "ai":
+                ai_data = self._fetch_ai_attributes_data(paper_id, paper_info)
+                if ai_data:
+                    update_dict = {
+                        "paper_id": paper_id,
+                        "arxiv_id": paper_info.get("arxiv_id"),
+                    }
+                    if ai_data.get("abstract"):
+                        update_dict["abstract"] = ai_data["abstract"]
+                    if ai_data.get("summary"):
+                        update_dict["summary"] = ai_data["summary"]
+                    if ai_data.get("full_name"):
+                        update_dict["full_name"] = ai_data["full_name"]
+                    if ai_data.get("alias"):
+                        update_dict["alias"] = ai_data["alias"]
+                    if ai_data.get("company_names"):
+                        update_dict["company_names"] = ai_data["company_names"]
+                    if ai_data.get("university_names"):
+                        update_dict["university_names"] = ai_data["university_names"]
+                    if len(update_dict) > 2:
+                        updates["paper_info_updates"].append(update_dict)
+                return updates
+
+            print(f"未知原子步骤: {step}")
+        except Exception as e:
+            import traceback
+
+            print(f"\n❌ 原子步骤 {step} 处理 {paper_id} 时出错: {e}")
+            traceback.print_exc()
+        return updates
+
+    def _atomic_batch_fn(self, step: str) -> Callable[[str], dict]:
+        def _fn(paper_id: str):
+            return self._complete_single_paper_internal_batch_atomic(paper_id, step)
+
+        return _fn
+
     def complete_new(
         self,
         max_workers=10,
@@ -1028,7 +1083,7 @@ class Completer:
         Args:
             max_workers: 每组并发线程数（默认 5）
             group_size: 每组处理的论文数量（默认 20）
-            only_mode: None 为全量补全；'arxiv_comment' 仅拉取 arXiv API comment；'venue' 仅基于已有 comment 做顶会标签（LLM）
+            only_mode: None 为全量补全；否则为原子步骤，见 --only 帮助。
             newest_date_limit: 仅处理全库按 date 倒序的前 N 篇与「待补全」的交集；默认 200。
                 为 None 或 <=0 时不按日期窗口限制（与旧行为一致）。
         """
@@ -1036,15 +1091,56 @@ class Completer:
         if only_mode == "arxiv_comment":
             paper_ids = self._get_paper_ids_need_arxiv_comment_fetch()
             print(f"全库待拉取 arXiv comment: {len(paper_ids)} 篇")
-            batch_fn = lambda pid: self._complete_single_paper_internal_batch_comment_phase(
-                pid, phase="fetch"
-            )
+
+            def batch_fn(pid: str):
+                return self._complete_single_paper_internal_batch_comment_phase(
+                    pid, phase="arxiv_comment"
+                )
+
         elif only_mode == "venue":
             paper_ids = self._get_paper_ids_need_venue_from_comment()
             print(f"全库待解析顶会标签（venue）: {len(paper_ids)} 篇")
-            batch_fn = lambda pid: self._complete_single_paper_internal_batch_comment_phase(
-                pid, phase="venue"
-            )
+
+            def batch_fn(pid: str):
+                return self._complete_single_paper_internal_batch_comment_phase(
+                    pid, phase="venue"
+                )
+
+        elif only_mode == "download_pdf":
+            paper_ids = self._get_paper_ids_need_to_download_pdf()
+            print(f"全库待下载 PDF: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("download_pdf")
+
+        elif only_mode == "pdf_to_txt":
+            paper_ids = self._get_paper_ids_need_pdf_to_txt()
+            print(f"全库待 PDF→TXT（已有 PDF、尚无 TXT）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("pdf_to_txt")
+
+        elif only_mode == "abstract":
+            paper_ids = list(self._database.get_arxiv_ids_having_no_abstarct())
+            print(f"全库待拉取摘要（arXiv API）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("abstract")
+
+        elif only_mode == "authors":
+            paper_ids = list(self._database.get_arxiv_ids_having_no_authors())
+            print(f"全库待拉取作者（arXiv API）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("authors")
+
+        elif only_mode == "full_name":
+            paper_ids = self._get_paper_ids_need_full_name()
+            print(f"全库待补全标题（arXiv 走 API）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("full_name")
+
+        elif only_mode == "ai":
+            paper_ids = self._get_paper_ids_need_ai_attributes()
+            print(f"全库待 AI 属性（需 paper.txt）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("ai")
+
+        elif only_mode == "arxiv_metadata":
+            paper_ids = self._get_paper_ids_need_arxiv_metadata()
+            print(f"全库待 arXiv 元数据（摘要/作者/标题/arxiv:comment，一篇一次 API）: {len(paper_ids)} 篇")
+            batch_fn = self._atomic_batch_fn("arxiv_metadata")
+
         else:
             paper_ids = self._get_paper_ids_need_complete()
             print(f"全库待补全: {len(paper_ids)} 篇")
@@ -1059,12 +1155,20 @@ class Completer:
             )
 
         if not paper_ids:
-            if only_mode == "arxiv_comment":
-                msg = "没有需要拉取 arXiv comment 的论文（若启用了日期窗口，可能该窗口内无待补全项）"
-            elif only_mode == "venue":
-                msg = "没有需要解析 venue 的论文（若启用了日期窗口，可能该窗口内无待补全项）"
-            else:
-                msg = "没有需要补全的论文"
+            empty_msgs = {
+                "arxiv_comment": "没有需要拉取 arXiv comment 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
+                "venue": "没有需要解析 venue 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
+                "download_pdf": "没有需要下载 PDF 的论文",
+                "pdf_to_txt": "没有需要 PDF→TXT 的论文（需先有 paper.pdf）",
+                "abstract": "没有需要拉取摘要的 arXiv 论文",
+                "authors": "没有需要拉取作者的 arXiv 论文",
+                "full_name": "没有需要补全标题的论文",
+                "ai": "没有需要补全 AI 属性的论文",
+                "arxiv_metadata": "没有需要拉取 arXiv 元数据的论文",
+            }
+            msg = empty_msgs.get(
+                only_mode, "没有需要补全的论文"
+            )
             print(msg)
             return
 
@@ -1074,10 +1178,16 @@ class Completer:
             groups.append(paper_ids[i:i + group_size])
         
         print(f"分为 {len(groups)} 组，每组最多 {group_size} 篇论文，每组并发 {max_workers} 个线程")
-        if only_mode == "arxiv_comment":
+        if only_mode in (
+            "arxiv_comment",
+            "arxiv_metadata",
+            "abstract",
+            "authors",
+            "full_name",
+        ):
             print(
-                "提示: arXiv API 约 3 秒/篇；进度条在每篇完成后才前进。"
-                "若停在「Fetching …」很久，多为限流(429)退避或网络慢，详见终端中的重试说明。",
+                "提示: 涉及 arXiv API 时约 3 秒/篇；进度条在每篇完成后才前进。"
+                "若长时间无输出，多为限流(429)退避或网络慢。",
                 flush=True,
             )
 
@@ -1155,7 +1265,7 @@ class Completer:
         
         Args:
             paper_id: 要处理的论文 ID
-            only_mode: None 为常规全量步骤；'arxiv_comment' 仅拉取 comment API；'venue' 仅顶会标签
+            only_mode: None 为常规全量步骤；否则为原子步骤（与 CLI --only 一致）
         
         Returns:
             str: 处理日志
@@ -1182,16 +1292,38 @@ class Completer:
                     if not arxiv_id:
                         print("非 arXiv 论文，跳过 arXiv comment")
                         return output_buffer.getvalue()
-                    print("模式: 仅拉取 arXiv comment（不调 LLM）")
+                    print("模式: 拉取 arXiv 元数据（一次 API）后仅做 arxiv_comment 步（不调 LLM）")
                     try:
                         paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
                         self._apply_arxiv_comment_venue(
-                            paper_id, paper_info, use_llm_for_venue=True, phase="fetch"
+                            paper_id,
+                            paper_info,
+                            use_llm_for_venue=True,
+                            phase="arxiv_comment",
                         )
-                        print("✓ arXiv comment 拉取完成")
+                        print("✓ arXiv comment 步骤完成")
                     except Exception as e:
                         print(f"✗ arXiv comment 拉取失败: {e}")
                     print(f"\n✅ 论文 {paper_id} comment 拉取步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "arxiv_metadata":
+                    if not arxiv_id:
+                        print("非 arXiv 论文，跳过")
+                        return output_buffer.getvalue()
+                    print("模式: 一次 arXiv API 写入摘要/作者/标题/arxiv:comment")
+                    try:
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        if self._arxiv_metadata_need_api(paper_info):
+                            self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
+                            print("✓ 元数据已更新")
+                        else:
+                            print("四类字段均已齐备，跳过 API")
+                    except Exception as e:
+                        print(f"✗ 失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} arXiv 元数据步骤结束")
                     return output_buffer.getvalue()
 
                 if only_mode == "venue":
@@ -1209,87 +1341,144 @@ class Completer:
                         print(f"✗ venue 处理失败: {e}")
                     print(f"\n✅ 论文 {paper_id} venue 步骤结束")
                     return output_buffer.getvalue()
-                
+
+                if only_mode == "download_pdf":
+                    print("模式: 仅下载 PDF 到缓存目录")
+                    try:
+                        self._download_pdf(paper_id, arxiv_id)
+                        print("✓ PDF 下载完成")
+                    except Exception as e:
+                        print(f"✗ PDF 下载失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} PDF 步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "pdf_to_txt":
+                    print("模式: 仅 PDF→TXT")
+                    pdf_path = os.path.join(self._path, paper_id, "paper.pdf")
+                    if not os.path.isfile(pdf_path):
+                        print("无 paper.pdf，跳过")
+                    else:
+                        try:
+                            self._convert_pdf_to_txt(paper_id)
+                            print("✓ 转换完成")
+                        except Exception as e:
+                            print(f"✗ 转换失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} PDF→TXT 步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "abstract":
+                    if not arxiv_id:
+                        print("非 arXiv 论文，跳过摘要")
+                        return output_buffer.getvalue()
+                    print("模式: 与其它元数据共用一次 arXiv API（任缺一则拉取并写回四类字段）")
+                    try:
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        if self._arxiv_metadata_need_api(paper_info):
+                            self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
+                            print("✓ 已拉取")
+                        else:
+                            print("无需拉取")
+                    except Exception as e:
+                        print(f"✗ 失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} 摘要步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "authors":
+                    if not arxiv_id:
+                        print("非 arXiv 论文，跳过作者")
+                        return output_buffer.getvalue()
+                    print("模式: 与其它元数据共用一次 arXiv API")
+                    try:
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        if self._arxiv_metadata_need_api(paper_info):
+                            self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
+                            print("✓ 已拉取")
+                        else:
+                            print("无需拉取")
+                    except Exception as e:
+                        print(f"✗ 失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} 作者步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "full_name":
+                    print("模式: 仅补全标题（arXiv 走 API；与全量逻辑一致）")
+                    try:
+                        self._fetch_full_name_by_paper_id(paper_id)
+                        print("✓ 标题步骤结束")
+                    except Exception as e:
+                        print(f"✗ 标题失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} 标题步骤结束")
+                    return output_buffer.getvalue()
+
+                if only_mode == "ai":
+                    print("模式: 仅 AI 属性（需 paper.txt）")
+                    try:
+                        self._fetch_ai_attributes_by_paper_id(paper_id)
+                        print("✓ AI 属性步骤结束")
+                    except Exception as e:
+                        print(f"✗ AI 属性失败: {e}")
+                    print(f"\n✅ 论文 {paper_id} AI 属性步骤结束")
+                    return output_buffer.getvalue()
+
                 # 1. 下载 PDF（如果需要）
                 pdf_path = os.path.join(self._path, paper_id, "paper.pdf")
                 if not os.path.exists(pdf_path):
-                    print(f"[1/7] 下载 PDF...")
+                    print(f"[1/6] 下载 PDF...")
                     try:
                         self._download_pdf(paper_id, arxiv_id)
                         print(f"✓ PDF 下载完成")
                     except Exception as e:
                         print(f"✗ PDF 下载失败: {e}")
                 else:
-                    print(f"[1/7] PDF 已存在，跳过下载")
+                    print(f"[1/6] PDF 已存在，跳过下载")
                 
-                # 2. 下载摘要（arXiv 论文，如果需要）
-                if arxiv_id:
-                    if not paper_info.get("abstract"):
-                        print(f"[2/7] 下载摘要...")
-                        try:
-                            self._download_abstract(arxiv_id)
-                            print(f"✓ 摘要下载完成")
-                        except Exception as e:
-                            print(f"✗ 摘要下载失败: {e}")
-                    else:
-                        print(f"[2/7] 摘要已存在，跳过下载")
-                else:
-                    print(f"[2/7] 非 arXiv 论文，跳过摘要下载")
+                paper_info = self._database.get_paper_info(paper_id=paper_id)
+                arxiv_id = paper_info.get("arxiv_id")
                 
-                # 3. 获取作者信息（arXiv 论文，如果需要）
+                # 2–4. arXiv：一次 API 元数据 → comment 步 → venue 步（不混为单一 phase）
                 if arxiv_id:
-                    if not paper_info.get("author_names"):
-                        print(f"[3/7] 获取作者信息...")
-                        try:
-                            self._fetch_author_names(arxiv_id)
-                            print(f"✓ 作者信息获取完成")
-                        except Exception as e:
-                            print(f"✗ 作者信息获取失败: {e}")
-                    else:
-                        print(f"[3/7] 作者信息已存在，跳过获取")
-                else:
-                    print(f"[3/7] 非 arXiv 论文，跳过作者信息获取")
-                
-                # 4. arXiv comment / 顶会标签
-                if arxiv_id:
-                    print(f"[4/7] arXiv comment / 顶会标签...")
+                    print(f"[2/6] arXiv API 元数据（摘要/作者/标题/arxiv:comment）...")
+                    try:
+                        self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
+                        print(f"✓ 元数据完成")
+                    except Exception as e:
+                        print(f"✗ 元数据失败: {e}")
+                    print(f"[3/6] arXiv comment（落库/结案，无 LLM）...")
                     try:
                         paper_info = self._database.get_paper_info(paper_id=paper_id)
-                        self._apply_arxiv_comment_venue(paper_id, paper_info)
-                        print(f"✓ arXiv comment 处理完成")
+                        self._apply_arxiv_comment_venue(
+                            paper_id, paper_info, phase="arxiv_comment"
+                        )
+                        print(f"✓ arxiv_comment 完成")
                     except Exception as e:
-                        print(f"✗ arXiv comment/venue 处理失败: {e}")
+                        print(f"✗ arxiv_comment 失败: {e}")
+                    print(f"[4/6] arXiv venue（LLM）...")
+                    try:
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        self._apply_arxiv_comment_venue(paper_id, paper_info, phase="venue")
+                        print(f"✓ venue 完成")
+                    except Exception as e:
+                        print(f"✗ venue 失败: {e}")
                 else:
-                    print(f"[4/7] 非 arXiv 论文，跳过 comment")
+                    print(
+                        f"[2/6][3/6][4/6] 非 arXiv 论文，跳过元数据、arxiv_comment 与 venue"
+                    )
                 
                 # 5. 转换 PDF 到 TXT（如果需要）
                 txt_path = os.path.join(self._path, paper_id, "paper.txt")
                 if os.path.exists(pdf_path) and not os.path.exists(txt_path):
-                    print(f"[5/7] 转换 PDF 到 TXT...")
+                    print(f"[5/6] 转换 PDF 到 TXT...")
                     try:
                         self._convert_pdf_to_txt(paper_id)
                         print(f"✓ PDF 转换完成")
                     except Exception as e:
                         print(f"✗ PDF 转换失败: {e}")
                 elif not os.path.exists(pdf_path):
-                    print(f"[5/7] PDF 不存在，跳过转换")
+                    print(f"[5/6] PDF 不存在，跳过转换")
                 else:
-                    print(f"[5/7] TXT 已存在，跳过转换")
+                    print(f"[5/6] TXT 已存在，跳过转换")
                 
-                # 6. 获取标题（如果需要）
-                paper_info = self._database.get_paper_info(paper_id=paper_id)
-                if not paper_info.get("full_name"):
-                    print(f"[6/7] 获取标题...")
-                    try:
-                        self._fetch_full_name_by_paper_id(paper_id)
-                        print(f"✓ 标题获取完成")
-                    except Exception as e:
-                        print(f"✗ 标题获取失败: {e}")
-                else:
-                    print(f"[6/7] 标题已存在，跳过获取")
-                
-                # 7. 获取 AI 属性（如果需要）
-                # 重新获取论文信息，因为前面的步骤可能更新了信息
+                # 6. 获取 AI 属性（如果需要）
                 paper_info = self._database.get_paper_info(paper_id=paper_id)
                 missing_fields = []
                 if not paper_info.get("abstract"):
@@ -1302,14 +1491,14 @@ class Completer:
                     missing_fields.append("full_name")
                 
                 if missing_fields:
-                    print(f"[7/7] 获取 AI 属性（缺少: {', '.join(missing_fields)}）...")
+                    print(f"[6/6] 获取 AI 属性（缺少: {', '.join(missing_fields)}）...")
                     try:
                         self._fetch_ai_attributes_by_paper_id(paper_id)
                         print(f"✓ AI 属性获取完成")
                     except Exception as e:
                         print(f"✗ AI 属性获取失败: {e}")
                 else:
-                    print(f"[7/7] AI 属性完整，跳过获取")
+                    print(f"[6/6] AI 属性完整，跳过获取")
                 
                 print(f"\n✅ 论文 {paper_id} 处理完成")
                 
@@ -1325,12 +1514,40 @@ if __name__ == "__main__":
     import argparse
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(description="PaperMap 论文补全（completer）")
+    _ONLY_MODES = (
+        "arxiv_comment",
+        "arxiv_metadata",
+        "venue",
+        "download_pdf",
+        "pdf_to_txt",
+        "abstract",
+        "authors",
+        "full_name",
+        "ai",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="PaperMap 论文补全（completer）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+原子步骤 (--only)，便于分步执行（与全量路径中的对应段一致）：
+  arxiv_metadata  一次 arXiv API 写入摘要+作者+标题+arxiv:comment（任缺一则拉取）
+  download_pdf    仅下载 PDF 到缓存
+  pdf_to_txt      仅转换：已有 paper.pdf → paper.txt
+  abstract        与 arxiv_metadata 相同触发条件，一次 API 写回四类字段
+  authors         同上
+  full_name       同上（有 arxiv_id 时）
+  ai              仅 LLM 抽取 AI 属性（需 paper.txt）
+  arxiv_comment   先拉元数据（一次 API），再仅做 comment 侧持久化/结案（不调 LLM）
+  venue           仅用库内 arxiv_comments 调 LLM 打 venue 标签（须先跑过 arxiv_comment / 元数据）
+  省略 --only 时按「待补全」列表跑全量合并补全（全量内仍顺序执行 comment 与 venue 两步）。""",
+    )
     parser.add_argument(
         "--only",
-        choices=("arxiv_comment", "venue"),
+        choices=_ONLY_MODES,
         default=None,
-        help="仅执行指定步骤（不跑 PDF/摘要/AI 等）。arxiv_comment：只调 arXiv API 写 comment；venue：只用库内 comment 调 LLM 打 venue.<简称> 标签（需先拉过 comment）",
+        metavar="STEP",
+        help="只跑一个原子步骤；见下方 epilog。与 --paper-id 联用可单篇调试",
     )
     parser.add_argument(
         "--paper-id",

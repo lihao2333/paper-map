@@ -71,6 +71,24 @@ class ArxivApi:
             raise ValueError(f"Could not find paper with arxiv_id: {arxiv_id}")
         return result
 
+    def fetch_record_metadata(self, arxiv_id: str) -> dict:
+        """
+        一次 API 请求取回与 Atom 记录相关的元数据（不含 venue/LLM）。
+        键：abstract, author_names, full_name, arxiv_comments
+        """
+        r = self.get_result(arxiv_id)
+        c = getattr(r, "comment", None)
+        if c is None:
+            c = ""
+        else:
+            c = c.strip() if isinstance(c, str) else str(c).strip()
+        return {
+            "abstract": (r.summary or "").strip() if r.summary else "",
+            "author_names": [a.name for a in r.authors],
+            "full_name": (r.title or "").strip() if r.title else "",
+            "arxiv_comments": c,
+        }
+
     def get_abstarct(self, arxiv_id: str):
         return self.get_result(arxiv_id).summary
 
