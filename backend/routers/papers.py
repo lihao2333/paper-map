@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from database import Database, paper_list_sort_key
+from database import Database
 from backend.schemas import Paper, PaperCreate, PaperUpdate, PaperListResponse
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -89,75 +89,21 @@ async def list_papers(
     author: Optional[str] = None,
     db: Database = Depends(get_db),
 ):
-    """获取论文列表，支持分页、搜索和筛选"""
-    all_papers = db.get_all_papers_with_details()
-    
-    # 搜索过滤
-    if search:
-        search_lower = search.lower()
-        all_papers = [
-            p for p in all_papers
-            if search_lower in (p.get("paper_id") or "").lower()
-            or search_lower in (p.get("arxiv_id") or "").lower()
-            or search_lower in (p.get("alias") or "").lower()
-            or search_lower in (p.get("full_name") or "").lower()
-            or search_lower in (p.get("abstract") or "").lower()
-            or search_lower in (p.get("summary") or "").lower()
-            or any(search_lower in (t or "").lower() for t in (p.get("tags") or []))
-        ]
-    
-    # 标签筛选
-    if tag:
-        needle = tag.lower()
-        papers_with_tags = []
-        for p in all_papers:
-            tag_names = p.get("tags") or []
-            if any(needle in (t or "").lower() for t in tag_names):
-                papers_with_tags.append(p)
-        all_papers = papers_with_tags
-    
-    # 公司筛选
-    if company:
-        company_lower = company.lower()
-        all_papers = [
-            p for p in all_papers
-            if any(company_lower in c.lower() for c in p.get("company_names", []))
-        ]
-    
-    # 高校筛选
-    if university:
-        university_lower = university.lower()
-        all_papers = [
-            p for p in all_papers
-            if any(university_lower in u.lower() for u in p.get("university_names", []))
-        ]
-    
-    # 作者筛选
-    if author:
-        author_lower = author.lower()
-        all_papers = [
-            p for p in all_papers
-            if any(author_lower in a.lower() for a in p.get("author_names", []))
-        ]
-    
-    all_papers.sort(key=paper_list_sort_key, reverse=True)
-    
-    total = len(all_papers)
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_papers = all_papers[start:end]
-    
-    # 获取标签信息
-    for p in page_papers:
-        if "tags" not in p:
-            paper_tags = db.get_paper_tags(p["paper_id"])
-            p["tags"] = [t["tag_name"] for t in paper_tags]
-    
+    """获取论文列表，支持分页、搜索和筛选（DB 侧筛选 + 当前页批量加载 debug 视图字段）"""
+    total, page_papers = db.list_papers_paginated(
+        page,
+        page_size,
+        search=search,
+        tag=tag,
+        company=company,
+        university=university,
+        author=author,
+    )
     return PaperListResponse(
         items=[Paper(**p) for p in page_papers],
         total=total,
         page=page,
-        page_size=page_size
+        page_size=page_size,
     )
 
 

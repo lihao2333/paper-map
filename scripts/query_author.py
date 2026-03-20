@@ -40,7 +40,7 @@ def query_author_papers(author_name: str, start_date: str, end_date: str) -> lis
         cur.execute("""
             SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
                    company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
-            FROM paper_based_view
+            FROM paper_based_view_debug
             WHERE author_names LIKE ? AND date BETWEEN ? AND ?
             ORDER BY
                 (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,

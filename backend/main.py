@@ -97,14 +97,13 @@ async def get_stats():
     db_path = Path(__file__).parent.parent / "data" / "database.db"
     db = Database(str(db_path))
     
-    papers = db.get_all_papers_with_details()
     tags = db.get_all_tags()
     watched_companies = db.get_all_watched_companies()
     watched_universities = db.get_all_watched_universities()
     watched_authors = db.get_all_watched_authors()
     
     return {
-        "total_papers": len(papers),
+        "total_papers": db.count_papers(),
         "total_tags": len(tags),
         "watched_companies": len(set(c["name"] for c in watched_companies)),
         "watched_universities": len(set(u["name"] for u in watched_universities)),

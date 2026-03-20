@@ -17,7 +17,7 @@ def _dedupe_author_names(author_names_raw: str) -> list:
 
 
 def _paper_dict_from_view_row(row) -> dict:
-    """paper_based_view 行列序：
+    """paper_based_view / paper_based_view_debug 行列序一致（轻量视图中聚合列为 NULL）：
     [0]paper_id [1]arxiv_id [2]paper_url [3]date [4]alias [5]full_name
     [6]abstract [7]summary
     [8]company_names [9]university_names [10]author_names
@@ -246,14 +246,12 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_tag_tag_id ON paper_tag(tag_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_date ON paper(date)")
 
-        # 删除旧视图（如果存在），然后重新创建以包含 author_names
+        # 视图：全量聚合供详情/矩阵/batch；轻量视图仅 paper 表（前端列表统计等低成本扫描）
         cursor.execute("DROP VIEW IF EXISTS paper_based_view")
-        
-        # 创建 paper_based_view，包含 company_names、university_names 和 author_names
-        # 使用 GROUP_CONCAT 聚合多个值，用逗号分隔
-        # 作者按 author_order 排序（一作、二作等）
+        cursor.execute("DROP VIEW IF EXISTS paper_based_view_debug")
+
         cursor.execute("""
-            CREATE VIEW paper_based_view AS
+            CREATE VIEW paper_based_view_debug AS
             SELECT
                 p.paper_id,
                 p.arxiv_id,
@@ -278,6 +276,27 @@ class Database:
             LEFT JOIN tag tg ON plt.tag_id = tg.tag_id
             GROUP BY p.paper_id, p.arxiv_id, p.paper_url, p.date, p.alias, p.full_name, p.abstract, p.summary,
                 p.arxiv_comments, p.is_comment_used, p.github_url
+        """)
+
+        cursor.execute("""
+            CREATE VIEW paper_based_view AS
+            SELECT
+                p.paper_id,
+                p.arxiv_id,
+                p.paper_url,
+                p.date,
+                p.alias,
+                p.full_name,
+                p.abstract,
+                p.summary,
+                CAST(NULL AS TEXT) AS company_names,
+                CAST(NULL AS TEXT) AS university_names,
+                CAST(NULL AS TEXT) AS author_names,
+                p.arxiv_comments,
+                p.is_comment_used,
+                CAST(NULL AS TEXT) AS tag_names,
+                p.github_url
+            FROM paper p
         """)
         
         conn.commit()
@@ -508,12 +527,12 @@ class Database:
             if paper_id:
                 cursor.execute("""
                     SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                    FROM paper_based_view WHERE paper_id = ?
+                    FROM paper_based_view_debug WHERE paper_id = ?
                 """, (paper_id,))
             else:
                 cursor.execute("""
                     SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                    FROM paper_based_view WHERE arxiv_id = ?
+                    FROM paper_based_view_debug WHERE arxiv_id = ?
                 """, (arxiv_id,))
 
             row = cursor.fetchone()
@@ -538,7 +557,7 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute(f"""
                     SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                    FROM paper_based_view WHERE paper_id IN ({placeholders})
+                    FROM paper_based_view_debug WHERE paper_id IN ({placeholders})
                 """, chunk)
                 for row in cursor.fetchall():
                     result[row[0]] = _paper_dict_from_view_row(row)
@@ -584,37 +603,49 @@ class Database:
         
         with sqlite3.connect(self._path) as conn:
             cursor = conn.cursor()
-            # 使用 LIKE 进行模糊匹配，支持 paper_id、arxiv_id、alias、full_name
             search_pattern = f"%{query}%"
-            cursor.execute("""
-                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                FROM paper_based_view
-                WHERE paper_id LIKE ?
-                   OR arxiv_id LIKE ?
-                   OR alias LIKE ?
-                   OR full_name LIKE ?
-                ORDER BY 
-                    CASE 
-                        WHEN paper_id = ? THEN 1
-                        WHEN arxiv_id = ? THEN 2
-                        WHEN alias = ? THEN 3
-                        WHEN full_name = ? THEN 4
-                        WHEN paper_id LIKE ? THEN 5
-                        WHEN arxiv_id LIKE ? THEN 6
-                        WHEN alias LIKE ? THEN 7
-                        WHEN full_name LIKE ? THEN 8
+            cursor.execute(
+                """
+                SELECT p.paper_id FROM paper p
+                WHERE p.paper_id LIKE ?
+                   OR COALESCE(p.arxiv_id, '') LIKE ?
+                   OR COALESCE(p.alias, '') LIKE ?
+                   OR COALESCE(p.full_name, '') LIKE ?
+                ORDER BY
+                    CASE
+                        WHEN p.paper_id = ? THEN 1
+                        WHEN p.arxiv_id = ? THEN 2
+                        WHEN p.alias = ? THEN 3
+                        WHEN p.full_name = ? THEN 4
+                        WHEN p.paper_id LIKE ? THEN 5
+                        WHEN COALESCE(p.arxiv_id, '') LIKE ? THEN 6
+                        WHEN COALESCE(p.alias, '') LIKE ? THEN 7
+                        WHEN COALESCE(p.full_name, '') LIKE ? THEN 8
                         ELSE 9
                     END,
-                    date DESC, paper_id
+                    p.date DESC, p.paper_id
                 LIMIT 20
-            """, (search_pattern, search_pattern, search_pattern, search_pattern,
-                  query, query, query, query,
-                  f"{query}%", f"{query}%", f"{query}%", f"{query}%"))
-            
-            results = []
-            for row in cursor.fetchall():
-                results.append(_paper_dict_from_view_row(row))
-            return results
+                """,
+                (
+                    search_pattern,
+                    search_pattern,
+                    search_pattern,
+                    search_pattern,
+                    query,
+                    query,
+                    query,
+                    query,
+                    f"{query}%",
+                    f"{query}%",
+                    f"{query}%",
+                    f"{query}%",
+                ),
+            )
+            ids = [row[0] for row in cursor.fetchall()]
+        if not ids:
+            return []
+        info = self.get_papers_info_batch(ids)
+        return [info[pid] for pid in ids if pid in info]
 
     def update_paper_info(self, data):
         """
@@ -1021,7 +1052,7 @@ class Database:
             cursor.execute("""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
                        company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                FROM paper_based_view
+                FROM paper_based_view_debug
                 ORDER BY
                     (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
                     arxiv_id DESC,
@@ -1030,91 +1061,134 @@ class Database:
             """)
             return [_paper_dict_from_view_row(row) for row in cursor.fetchall()]
 
-    def query_papers(
-        self,
-        company: str = None,
-        university: str = None,
-        author: str = None,
-        tag: str = None,
-        start_date: str = None,
-        end_date: str = None,
-    ):
-        """
-        按条件查询论文，支持公司、高校、作者、标签、时间范围过滤。
-        返回格式同 get_all_papers_with_details。
+    def count_papers(self) -> int:
+        with sqlite3.connect(self._path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM paper")
+            return int(cur.fetchone()[0])
 
-        参数:
-            company: 公司名（模糊匹配，如 'Tesla'、'Waymo'）
-            university: 高校名（模糊匹配）
-            author: 作者名（模糊匹配）
-            tag: 标签名或前缀（模糊匹配，支持层级如 '自动驾驶.感知'）
-            start_date: 开始日期 yyyyMM，如 '202401'
-            end_date: 结束日期 yyyyMM，如 '202412'
+    def list_papers_paginated(
+        self,
+        page: int,
+        page_size: int,
+        search: Optional[str] = None,
+        tag: Optional[str] = None,
+        company: Optional[str] = None,
+        university: Optional[str] = None,
+        author: Optional[str] = None,
+    ) -> Tuple[int, List[dict]]:
         """
+        论文列表分页：在 paper 表 + EXISTS 上筛选，仅对当前页用 paper_based_view_debug 批量取全字段。
+        与 GET /api/papers 行为一致（search / tag / company / university / author）。
+        """
+        conditions: List[str] = []
+        params: List = []
+
+        if search and search.strip():
+            s = search.strip().lower()
+            pat = f"%{s}%"
+            conditions.append(
+                """
+                (
+                    LOWER(COALESCE(p.paper_id, '')) LIKE ?
+                    OR LOWER(COALESCE(p.arxiv_id, '')) LIKE ?
+                    OR LOWER(COALESCE(p.alias, '')) LIKE ?
+                    OR LOWER(COALESCE(p.full_name, '')) LIKE ?
+                    OR LOWER(COALESCE(p.abstract, '')) LIKE ?
+                    OR LOWER(COALESCE(p.summary, '')) LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM paper_tag pt
+                        INNER JOIN tag tg ON pt.tag_id = tg.tag_id
+                        WHERE pt.paper_id = p.paper_id AND LOWER(tg.tag_name) LIKE ?
+                    )
+                )
+                """.strip()
+            )
+            params.extend([pat, pat, pat, pat, pat, pat, pat])
+
+        if tag and tag.strip():
+            pat = f"%{tag.strip().lower()}%"
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM paper_tag pt
+                    INNER JOIN tag tg ON pt.tag_id = tg.tag_id
+                    WHERE pt.paper_id = p.paper_id AND LOWER(tg.tag_name) LIKE ?
+                )
+                """.strip()
+            )
+            params.append(pat)
+
+        if company and company.strip():
+            pat = f"%{company.strip().lower()}%"
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM paper_company pc
+                    WHERE pc.paper_id = p.paper_id AND LOWER(pc.company_name) LIKE ?
+                )
+                """.strip()
+            )
+            params.append(pat)
+
+        if university and university.strip():
+            pat = f"%{university.strip().lower()}%"
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM paper_university pu
+                    WHERE pu.paper_id = p.paper_id AND LOWER(pu.university_name) LIKE ?
+                )
+                """.strip()
+            )
+            params.append(pat)
+
+        if author and author.strip():
+            pat = f"%{author.strip().lower()}%"
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM paper_author pa
+                    WHERE pa.paper_id = p.paper_id AND LOWER(pa.author_name) LIKE ?
+                )
+                """.strip()
+            )
+            params.append(pat)
+
+        where_sql = " AND ".join(conditions) if conditions else "1=1"
+        order_sql = """
+            ORDER BY
+                (CASE WHEN p.arxiv_id IS NOT NULL AND TRIM(p.arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
+                p.arxiv_id DESC,
+                p.date DESC,
+                p.paper_id DESC
+        """
+
         with sqlite3.connect(self._path) as conn:
             cursor = conn.cursor()
-
-            conditions = []
-            params = []
-
-            if company:
-                conditions.append("company_names LIKE ?")
-                params.append(f"%{company}%")
-            if university:
-                conditions.append("university_names LIKE ?")
-                params.append(f"%{university}%")
-            if author:
-                conditions.append("author_names LIKE ?")
-                params.append(f"%{author}%")
-            if start_date:
-                conditions.append("(date >= ? OR date IS NULL)")
-                params.append(start_date)
-            if end_date:
-                conditions.append("(date <= ? OR date IS NULL)")
-                params.append(end_date)
-
-            where_sql = " AND ".join(conditions) if conditions else "1=1"
-
-            if tag:
-                # 需要按 tag 过滤，先查 paper_based_view 再过滤 tag
-                cursor.execute(
-                    f"""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                           company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                    FROM paper_based_view
-                    WHERE {where_sql}
-                    ORDER BY
-                        (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
-                        arxiv_id DESC,
-                        date DESC,
-                        paper_id
-                    """,
-                    params,
-                )
-                rows = cursor.fetchall()
-                result = []
-                needle = tag.lower()
-                for row in rows:
-                    d = _paper_dict_from_view_row(row)
-                    if any(needle in t.lower() for t in d["tags"]):
-                        result.append(d)
-                return result
-
             cursor.execute(
-                f"""
-                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                FROM paper_based_view
-                WHERE {where_sql}
-                ORDER BY
-                    (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
-                    arxiv_id DESC,
-                    date DESC,
-                    paper_id
-                """,
+                f"SELECT COUNT(*) FROM paper p WHERE {where_sql}",
                 params,
             )
-            return [_paper_dict_from_view_row(row) for row in cursor.fetchall()]
+            total = int(cursor.fetchone()[0])
+
+            offset = (page - 1) * page_size
+            cursor.execute(
+                f"""
+                SELECT p.paper_id FROM paper p
+                WHERE {where_sql}
+                {order_sql}
+                LIMIT ? OFFSET ?
+                """,
+                [*params, page_size, offset],
+            )
+            ids = [row[0] for row in cursor.fetchall()]
+
+        if not ids:
+            return total, []
+        batch = self.get_papers_info_batch(ids)
+        items = [batch[pid] for pid in ids if pid in batch]
+        return total, items
 
     def query_papers(
         self,
@@ -1159,12 +1233,12 @@ class Database:
             cursor = conn.cursor()
             where_sql = " AND ".join(conditions) if conditions else "1=1"
 
-            # 先用 paper_based_view 筛选
+            # 先用 paper_based_view_debug 筛选（依赖聚合列 LIKE）
             cursor.execute(
                 f"""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
                        company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
-                FROM paper_based_view
+                FROM paper_based_view_debug
                 WHERE {where_sql}
                 ORDER BY
                     (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,

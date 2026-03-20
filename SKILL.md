@@ -56,9 +56,16 @@ description: Query and summarize paper data from PaperMap. 支持按公司、高
 | **paper_tag** | paper_id | TEXT | FK → paper |
 | | tag_id | INTEGER | FK → tag |
 
-### 视图 paper_based_view
+### 视图 `paper_based_view` / `paper_based_view_debug`
 
-聚合论文及其关联信息，常用列：
+| 视图 | 用途 |
+|------|------|
+| **paper_based_view** | 仅 `paper` 表列 + 占位 `NULL` 聚合列，低成本全表扫描（统计、轻量查询） |
+| **paper_based_view_debug** | 多表 JOIN + `GROUP_CONCAT` 全量聚合（公司/高校/作者/标签字符串），用于详情、批量 hover、`get_all_papers_with_details` 等 |
+
+两视图**列序一致**；轻量视图中 `company_names` / `university_names` / `author_names` / `tag_names` 为 `NULL`。
+
+**paper_based_view_debug** 常用列：
 
 | 列名 | 说明 |
 |------|------|
@@ -66,6 +73,7 @@ description: Query and summarize paper data from PaperMap. 支持按公司、高
 | company_names | 逗号分隔的公司名 |
 | university_names | 逗号分隔的高校名 |
 | author_names | 按 author_order 排序的作者名，逗号分隔 |
+| tag_names | 逗号分隔的标签名 |
 
 ### 格式约定
 
@@ -111,7 +119,7 @@ db_path = get_db_path()
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row  # 支持列名访问
 cursor = conn.cursor()
-cursor.execute("SELECT * FROM paper_based_view WHERE ...")
+cursor.execute("SELECT * FROM paper_based_view_debug WHERE ...")  -- 需要聚合关联时
 rows = cursor.fetchall()
 conn.close()
 ```
@@ -155,7 +163,7 @@ ORDER BY p.date DESC;
 
 ```sql
 -- 通过 paper_university 表查询（条件中的值来自 watched_university.match_rule）
-SELECT * FROM paper_based_view
+SELECT * FROM paper_based_view_debug
 WHERE paper_id IN (
   SELECT paper_id FROM paper_university
   WHERE university_name IN (...) OR university_name LIKE ?  -- 由 watched_university 提供
@@ -166,7 +174,7 @@ AND paper_id IN (SELECT paper_id FROM paper_tag WHERE tag_id = (SELECT tag_id FR
 ### 4. 某作者近期工作
 
 ```sql
-SELECT * FROM paper_based_view
+SELECT * FROM paper_based_view_debug
 WHERE author_names LIKE '%John Smith%'
   AND date >= '202401'
 ORDER BY date DESC;
