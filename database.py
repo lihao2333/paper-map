@@ -231,7 +231,21 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watched_company_name ON watched_company(name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watched_university_name ON watched_university(name)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_watched_author_name ON watched_author(name)")
-        
+        # 按实体名反查 paper（矩阵 / IN / LIKE），主键只有 paper_id 时这些过滤会扫表
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_paper_company_company_name ON paper_company(company_name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_paper_university_university_name "
+            "ON paper_university(university_name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_paper_author_author_name ON paper_author(author_name)"
+        )
+        # 按 tag 找论文：复合索引 (paper_id, tag_id) 对 tag_id = ? 不友好
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_tag_tag_id ON paper_tag(tag_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_date ON paper(date)")
+
         # 删除旧视图（如果存在），然后重新创建以包含 author_names
         cursor.execute("DROP VIEW IF EXISTS paper_based_view")
         

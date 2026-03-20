@@ -3,7 +3,7 @@ import type { Paper, PaperListResponse, Tag, TagTreeNode, WatchedItem, Stats } f
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 60000,
 })
 
 // Papers
