@@ -148,10 +148,13 @@ def _build_hover_info(db: Database, paper_id: str) -> Dict:
     tags_with_id = [{"tag_id": t["tag_id"], "tag_name": t["tag_name"]} for t in tags] if tags else []
     summary = info.get("summary") or ""
     summary_trunc = summary[:300] + ("..." if len(summary) > 300 else "")
+    ac = (info.get("arxiv_comments") or "").strip()
+    arxiv_comments_trunc = ac[:500] + ("..." if len(ac) > 500 else "") if ac else ""
     return {
         "full_name": info.get("full_name", ""),
         "abstract": info.get("abstract", ""),
         "summary": summary_trunc,
+        "arxiv_comments": arxiv_comments_trunc,
         "company_names": info.get("company_names", []),
         "university_names": info.get("university_names", []),
         "author_names": info.get("author_names", []),

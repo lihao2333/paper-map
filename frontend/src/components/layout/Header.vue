@@ -43,8 +43,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <header class="h-14 flex items-center justify-between px-6 border-b bg-card/80 backdrop-blur-md sticky top-0 z-20 shrink-0">
-    <div class="flex items-center gap-4 min-w-0 flex-1">
+  <header
+    class="flex min-h-14 items-start justify-between gap-4 border-b bg-card/80 px-6 py-2.5 backdrop-blur-md sticky top-0 z-20 shrink-0"
+  >
+    <div class="flex min-w-0 flex-1 items-start gap-4">
       <template v-if="route.path === '/' || route.path === '/companies'">
         <div id="header-companies-teleport" class="contents" />
       </template>
@@ -67,7 +69,7 @@ onMounted(() => {
       </template>
     </div>
 
-    <div class="flex items-center gap-2 shrink-0">
+    <div class="flex shrink-0 items-center gap-2 self-center pt-0.5">
       <div class="relative">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input

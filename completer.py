@@ -1,6 +1,6 @@
 import os
 import requests
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from ai_api import AiApi
@@ -97,6 +97,44 @@ class Completer:
         else:
             self._database.update_paper_info([row])
         return True
+
+    def _batch_fetch_arxiv_metadata_for_paper_ids(
+        self, paper_ids: List[str]
+    ) -> List[dict]:
+        """
+        本组内合并 id_list 请求：对仍需 API 的论文一次（或按块）拉取元数据，
+        返回 update_paper_info 用的行列表；失败或跳过的论文不产生行。
+        """
+        rows: List[dict] = []
+        need_ids: List[str] = []
+        infos: Dict[str, Optional[dict]] = {}
+        for pid in paper_ids:
+            pi = self._database.get_paper_info(paper_id=pid)
+            infos[pid] = pi
+            if pi and self._arxiv_metadata_need_api(pi):
+                need_ids.append(pid)
+        if not need_ids:
+            return rows
+        aids = [infos[pid]["arxiv_id"] for pid in need_ids]
+        metas = self._arxiv_api.fetch_record_metadata_batch(aids)
+        for pid in need_ids:
+            aid = infos[pid]["arxiv_id"]
+            meta = metas.get(aid)
+            if not meta:
+                print(f"✗ arXiv 批量元数据未命中 {pid} ({aid})", flush=True)
+                continue
+            self._paper_info_apply_arxiv_metadata(infos[pid], meta)
+            rows.append(
+                {
+                    "paper_id": pid,
+                    "arxiv_id": aid,
+                    "abstract": meta["abstract"],
+                    "author_names": meta["author_names"],
+                    "full_name": meta["full_name"],
+                    "arxiv_comments": meta["arxiv_comments"],
+                }
+            )
+        return rows
 
     def _get_paper_ids_need_arxiv_metadata(self) -> List[str]:
         out: List[str] = []
@@ -610,18 +648,6 @@ class Completer:
         
         return paper_ids_need
 
-    def _get_paper_ids_need_arxiv_comment_fetch(self) -> List[str]:
-        """仅需要从 arXiv API 拉取 comment 的论文（有 arxiv_id，且尚未存过有效拉取结果）"""
-        out: List[str] = []
-        for paper_id in self._database.get_paper_ids():
-            paper_info = self._database.get_paper_info(paper_id=paper_id)
-            if not paper_info or not paper_info.get("arxiv_id"):
-                continue
-            ac = paper_info.get("arxiv_comments")
-            if ac is None or (ac == "" and not paper_info.get("is_comment_used")):
-                out.append(paper_id)
-        return out
-
     def _get_paper_ids_need_venue_from_comment(self) -> List[str]:
         """需要从已有 arxiv_comments 解析顶会 / 结案的论文（不拉取 API；comment 为 NULL 的不入队）"""
         out: List[str] = []
@@ -1088,16 +1114,7 @@ class Completer:
                 为 None 或 <=0 时不按日期窗口限制（与旧行为一致）。
         """
         # 1. 查找所有需要 complete 的 paper
-        if only_mode == "arxiv_comment":
-            paper_ids = self._get_paper_ids_need_arxiv_comment_fetch()
-            print(f"全库待拉取 arXiv comment: {len(paper_ids)} 篇")
-
-            def batch_fn(pid: str):
-                return self._complete_single_paper_internal_batch_comment_phase(
-                    pid, phase="arxiv_comment"
-                )
-
-        elif only_mode == "venue":
+        if only_mode == "venue":
             paper_ids = self._get_paper_ids_need_venue_from_comment()
             print(f"全库待解析顶会标签（venue）: {len(paper_ids)} 篇")
 
@@ -1138,7 +1155,9 @@ class Completer:
 
         elif only_mode == "arxiv_metadata":
             paper_ids = self._get_paper_ids_need_arxiv_metadata()
-            print(f"全库待 arXiv 元数据（摘要/作者/标题/arxiv:comment，一篇一次 API）: {len(paper_ids)} 篇")
+            print(
+                f"全库待 arXiv 元数据+comment 步（摘要/作者/标题/arxiv:comment，按组 id_list 批量查询）: {len(paper_ids)} 篇"
+            )
             batch_fn = self._atomic_batch_fn("arxiv_metadata")
 
         else:
@@ -1156,7 +1175,6 @@ class Completer:
 
         if not paper_ids:
             empty_msgs = {
-                "arxiv_comment": "没有需要拉取 arXiv comment 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
                 "venue": "没有需要解析 venue 的论文（若启用了日期窗口，可能该窗口内无待补全项）",
                 "download_pdf": "没有需要下载 PDF 的论文",
                 "pdf_to_txt": "没有需要 PDF→TXT 的论文（需先有 paper.pdf）",
@@ -1178,16 +1196,15 @@ class Completer:
             groups.append(paper_ids[i:i + group_size])
         
         print(f"分为 {len(groups)} 组，每组最多 {group_size} 篇论文，每组并发 {max_workers} 个线程")
+        metadata_only_modes = ("arxiv_metadata", "abstract", "authors", "full_name")
         if only_mode in (
-            "arxiv_comment",
             "arxiv_metadata",
             "abstract",
             "authors",
             "full_name",
         ):
             print(
-                "提示: 涉及 arXiv API 时约 3 秒/篇；进度条在每篇完成后才前进。"
-                "若长时间无输出，多为限流(429)退避或网络慢。",
+                "提示: 元数据已按组用 arXiv id_list 合并请求；仍受 Client 节流与 429 退避影响。",
                 flush=True,
             )
 
@@ -1205,6 +1222,78 @@ class Completer:
             group_paper_info_updates = []
             group_abstract_updates = []
             group_tag_updates = []
+
+            if only_mode in metadata_only_modes:
+                meta_rows: List[dict] = []
+                try:
+                    meta_rows = self._batch_fetch_arxiv_metadata_for_paper_ids(group)
+                    if meta_rows:
+                        self._database.update_paper_info(meta_rows)
+                    group_success = len(group)
+                    total_success += len(group)
+                    print(
+                        f"第 {group_idx} 组 arXiv 元数据批量拉取: 已写入 {len(meta_rows)} 篇",
+                        flush=True,
+                    )
+                except Exception as e:
+                    group_error = len(group)
+                    total_error += len(group)
+                    print(f"\n✗ 第 {group_idx} 组批量元数据失败: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                if only_mode == "arxiv_metadata":
+                    for pid in group:
+                        pi = self._database.get_paper_info(paper_id=pid)
+                        if not pi or not pi.get("arxiv_id"):
+                            continue
+                        try:
+                            pi_rows, tag_names = self._process_arxiv_comment_venue(
+                                pid,
+                                pi,
+                                use_llm_for_venue=True,
+                                phase="arxiv_comment",
+                            )
+                            group_paper_info_updates.extend(pi_rows)
+                            for t in tag_names:
+                                group_tag_updates.append((pid, t))
+                        except Exception as e:
+                            print(f"\n✗ arXiv comment 步 {pid}: {e}")
+                            import traceback
+
+                            traceback.print_exc()
+                if group_paper_info_updates or group_abstract_updates or group_tag_updates:
+                    try:
+                        if group_abstract_updates:
+                            self._database.update_paper_abstract(group_abstract_updates)
+                        if group_paper_info_updates:
+                            self._database.update_paper_info(group_paper_info_updates)
+                        for pid, tag_name in group_tag_updates:
+                            self._database.add_tag_to_paper(pid, tag_name)
+                        print(
+                            f"第 {group_idx} 组完成: {group_success} 成功, {group_error} 失败, 已批量写入数据库"
+                        )
+                    except Exception as e:
+                        print(f"✗ 第 {group_idx} 组数据库写入失败: {e}")
+                        import traceback
+
+                        traceback.print_exc()
+                else:
+                    print(
+                        f"第 {group_idx} 组完成: {group_success} 成功, {group_error} 失败, 无数据需要写入"
+                    )
+                continue
+
+            if only_mode is None:
+                try:
+                    pre_rows = self._batch_fetch_arxiv_metadata_for_paper_ids(group)
+                    if pre_rows:
+                        self._database.update_paper_info(pre_rows)
+                except Exception as e:
+                    print(f"\n✗ 第 {group_idx} 组预取 arXiv 元数据失败: {e}")
+                    import traceback
+
+                    traceback.print_exc()
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 提交所有任务
@@ -1288,32 +1377,13 @@ class Completer:
                 
                 arxiv_id = paper_info.get("arxiv_id")
 
-                if only_mode == "arxiv_comment":
-                    if not arxiv_id:
-                        print("非 arXiv 论文，跳过 arXiv comment")
-                        return output_buffer.getvalue()
-                    print("模式: 拉取 arXiv 元数据（一次 API）后仅做 arxiv_comment 步（不调 LLM）")
-                    try:
-                        paper_info = self._database.get_paper_info(paper_id=paper_id)
-                        self._ensure_arxiv_metadata_from_api(paper_id, paper_info, None)
-                        paper_info = self._database.get_paper_info(paper_id=paper_id)
-                        self._apply_arxiv_comment_venue(
-                            paper_id,
-                            paper_info,
-                            use_llm_for_venue=True,
-                            phase="arxiv_comment",
-                        )
-                        print("✓ arXiv comment 步骤完成")
-                    except Exception as e:
-                        print(f"✗ arXiv comment 拉取失败: {e}")
-                    print(f"\n✅ 论文 {paper_id} comment 拉取步骤结束")
-                    return output_buffer.getvalue()
-
                 if only_mode == "arxiv_metadata":
                     if not arxiv_id:
                         print("非 arXiv 论文，跳过")
                         return output_buffer.getvalue()
-                    print("模式: 一次 arXiv API 写入摘要/作者/标题/arxiv:comment")
+                    print(
+                        "模式: arXiv API 写入摘要/作者/标题/arxiv:comment，随后 comment 步结案（不调 LLM）"
+                    )
                     try:
                         paper_info = self._database.get_paper_info(paper_id=paper_id)
                         if self._arxiv_metadata_need_api(paper_info):
@@ -1321,6 +1391,14 @@ class Completer:
                             print("✓ 元数据已更新")
                         else:
                             print("四类字段均已齐备，跳过 API")
+                        paper_info = self._database.get_paper_info(paper_id=paper_id)
+                        self._apply_arxiv_comment_venue(
+                            paper_id,
+                            paper_info,
+                            use_llm_for_venue=True,
+                            phase="arxiv_comment",
+                        )
+                        print("✓ comment 步完成")
                     except Exception as e:
                         print(f"✗ 失败: {e}")
                     print(f"\n✅ 论文 {paper_id} arXiv 元数据步骤结束")
@@ -1515,7 +1593,6 @@ if __name__ == "__main__":
     from pathlib import Path
 
     _ONLY_MODES = (
-        "arxiv_comment",
         "arxiv_metadata",
         "venue",
         "download_pdf",
@@ -1531,15 +1608,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 原子步骤 (--only)，便于分步执行（与全量路径中的对应段一致）：
-  arxiv_metadata  一次 arXiv API 写入摘要+作者+标题+arxiv:comment（任缺一则拉取）
+  arxiv_metadata  批量 id_list 拉元数据并写库，再对每篇做 comment 步结案（不调 LLM）；随后可 --only venue
   download_pdf    仅下载 PDF 到缓存
   pdf_to_txt      仅转换：已有 paper.pdf → paper.txt
-  abstract        与 arxiv_metadata 相同触发条件，一次 API 写回四类字段
+  abstract        与 arxiv_metadata 相同四类字段触发条件（仅批量拉元数据，不做 comment 步）
   authors         同上
   full_name       同上（有 arxiv_id 时）
   ai              仅 LLM 抽取 AI 属性（需 paper.txt）
-  arxiv_comment   先拉元数据（一次 API），再仅做 comment 侧持久化/结案（不调 LLM）
-  venue           仅用库内 arxiv_comments 调 LLM 打 venue 标签（须先跑过 arxiv_comment / 元数据）
+  venue           仅用库内 arxiv_comments 调 LLM 打 venue 标签（须先有元数据/comment）
   省略 --only 时按「待补全」列表跑全量合并补全（全量内仍顺序执行 comment 与 venue 两步）。""",
     )
     parser.add_argument(

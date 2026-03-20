@@ -89,14 +89,32 @@ const emit = defineEmits<{
             </td>
             <td class="px-4 py-3 text-sm text-muted-foreground">
               <PaperTooltip
-                :hover-info="paper.abstract ? { full_name: paper.full_name || paper.alias, abstract: paper.abstract, github_url: paper.github_url } : null"
+                :hover-info="
+                  paper.abstract || paper.arxiv_comments
+                    ? {
+                        full_name: paper.full_name || paper.alias,
+                        abstract: paper.abstract,
+                        arxiv_comments: paper.arxiv_comments || undefined,
+                        github_url: paper.github_url,
+                      }
+                    : null
+                "
               >
                 <span>{{ truncate(paper.abstract, 50) || '—' }}</span>
               </PaperTooltip>
             </td>
             <td class="px-4 py-3 text-sm text-muted-foreground">
               <PaperTooltip
-                :hover-info="paper.summary ? { full_name: paper.full_name || paper.alias, summary: paper.summary, github_url: paper.github_url } : null"
+                :hover-info="
+                  paper.summary || paper.arxiv_comments
+                    ? {
+                        full_name: paper.full_name || paper.alias,
+                        summary: paper.summary,
+                        arxiv_comments: paper.arxiv_comments || undefined,
+                        github_url: paper.github_url,
+                      }
+                    : null
+                "
               >
                 <span>{{ truncate(paper.summary, 50) || '—' }}</span>
               </PaperTooltip>

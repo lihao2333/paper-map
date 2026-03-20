@@ -58,6 +58,8 @@ export interface HoverInfo {
   full_name?: string
   abstract?: string
   summary?: string
+  /** arXiv 元数据中的 comment 字段（截断） */
+  arxiv_comments?: string
   company_names?: string[]
   university_names?: string[]
   author_names?: string[]

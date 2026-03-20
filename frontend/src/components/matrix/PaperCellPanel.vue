@@ -83,7 +83,16 @@ const infoBlocks = computed(() => {
   if (h.full_name) {
     blocks.push({ type: 'title', content: h.full_name })
   }
-  if (h.paper_id || h.author_names?.length || h.date || h.summary || h.company_names?.length || h.university_names?.length || h.tag_names?.length) {
+  if (
+    h.paper_id ||
+    h.author_names?.length ||
+    h.date ||
+    h.summary ||
+    h.arxiv_comments ||
+    h.company_names?.length ||
+    h.university_names?.length ||
+    h.tag_names?.length
+  ) {
     if (h.full_name) blocks.push({ type: 'separator' })
   }
   if (h.paper_id) blocks.push({ type: 'text', content: `🆔 Paper ID: ${h.paper_id}` })
@@ -92,6 +101,9 @@ const infoBlocks = computed(() => {
   }
   if (h.date) blocks.push({ type: 'text', content: `📅 日期: ${formatDate(h.date)}` })
   if (h.summary) blocks.push({ type: 'text', content: `📝 AI 总结: ${h.summary}` })
+  if (h.arxiv_comments?.trim()) {
+    blocks.push({ type: 'text', content: `💬 arXiv comment: ${h.arxiv_comments.trim()}` })
+  }
   if (h.company_names?.length || h.university_names?.length) {
     blocks.push({ type: 'separator' })
     if (h.company_names?.length) {

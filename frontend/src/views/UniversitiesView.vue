@@ -11,7 +11,7 @@ const headers = ref<string[]>([])
 const rows = ref<any[]>([])
 const headerRules = ref<Record<string, string[]>>({})
 const loading = ref(false)
-const matrixTagRule = ref('venue.*')
+const matrixTagRules = ref<string[]>([])
 
 /** 按名称分组，收集所有 match_rule */
 function buildHeaderRules(items: { name: string; match_rule: string }[]): Record<string, string[]> {
@@ -27,7 +27,7 @@ async function fetchData() {
   loading.value = true
   try {
     const [matrixData, watched] = await Promise.all([
-      api.getUniversityMatrix({ tag_rule: matrixTagRule.value }),
+      api.getUniversityMatrix({ tag_rules: matrixTagRules.value }),
       api.getWatchedUniversities(),
     ])
     headers.value = matrixData.universities
@@ -42,13 +42,13 @@ async function fetchData() {
 
 onMounted(fetchData)
 
-watchDebounced(matrixTagRule, () => fetchData(), { debounce: 400 })
+watchDebounced(matrixTagRules, () => fetchData(), { debounce: 400, deep: true })
 </script>
 
 <template>
   <div class="flex flex-col flex-1 min-h-0">
     <Teleport to="#header-universities-teleport">
-      <div class="flex items-center justify-between w-full gap-4">
+      <div class="flex w-full flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div class="flex items-center gap-3 min-w-0">
           <div class="flex items-center justify-center h-8 w-8 rounded-lg bg-emerald-500/10 shrink-0">
             <GraduationCap class="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
@@ -57,14 +57,16 @@ watchDebounced(matrixTagRule, () => fetchData(), { debounce: 400 })
             关注高校 <span class="text-muted-foreground font-normal">· 显示关注高校发表的论文矩阵</span>
           </h1>
         </div>
-        <div class="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <MatrixTagRuleBar v-model="matrixTagRule" />
+        <div class="flex w-full min-w-0 flex-col items-stretch gap-2 sm:w-auto sm:max-w-none sm:flex-row sm:flex-wrap sm:items-start sm:justify-end">
+          <MatrixTagRuleBar v-model="matrixTagRules" class="min-w-0 max-w-full flex-1" />
+          <div class="flex flex-wrap items-center justify-end gap-2 shrink-0">
           <Badge variant="secondary">{{ headers.length }} 所高校</Badge>
           <Badge variant="outline">{{ rows.length }} 篇论文</Badge>
           <Button variant="outline" size="sm" :disabled="loading" @click="fetchData">
             <RefreshCw :class="['h-3.5 w-3.5 mr-1.5', loading && 'animate-spin']" />
             刷新
           </Button>
+          </div>
         </div>
       </div>
     </Teleport>

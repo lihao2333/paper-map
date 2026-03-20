@@ -51,28 +51,34 @@ export async function completeSummaries(): Promise<{ completed: number; total: n
   return data
 }
 
-// Matrix（tag_rule：标签 glob；缺省 venue.*；传空字符串表示不按标签筛选）
+/** 矩阵标签参数：多条规则逗号拼接，OR 语义；空数组/未传表示不按标签筛选 */
+function matrixTagRulesParam(rules: string[] | undefined): string {
+  if (rules === undefined || rules.length === 0) return ''
+  return rules.join(',')
+}
+
+// Matrix（tag_rules：多个 glob 逗号分隔；空表示不按标签筛选；仍支持旧参数 tag_rule）
 export async function getCompanyMatrix(opts?: {
-  tag_rule?: string
+  tag_rules?: string[]
 }): Promise<{ companies: string[]; papers: any[] }> {
-  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
-  const { data } = await api.get('/matrix/companies', { params: { tag_rule } })
+  const tag_rules = matrixTagRulesParam(opts?.tag_rules)
+  const { data } = await api.get('/matrix/companies', { params: { tag_rules } })
   return data
 }
 
 export async function getUniversityMatrix(opts?: {
-  tag_rule?: string
+  tag_rules?: string[]
 }): Promise<{ universities: string[]; papers: any[] }> {
-  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
-  const { data } = await api.get('/matrix/universities', { params: { tag_rule } })
+  const tag_rules = matrixTagRulesParam(opts?.tag_rules)
+  const { data } = await api.get('/matrix/universities', { params: { tag_rules } })
   return data
 }
 
 export async function getAuthorMatrix(opts?: {
-  tag_rule?: string
+  tag_rules?: string[]
 }): Promise<{ authors: string[]; papers: any[] }> {
-  const tag_rule = opts?.tag_rule !== undefined ? opts.tag_rule : 'venue.*'
-  const { data } = await api.get('/matrix/authors', { params: { tag_rule } })
+  const tag_rules = matrixTagRulesParam(opts?.tag_rules)
+  const { data } = await api.get('/matrix/authors', { params: { tag_rules } })
   return data
 }
 

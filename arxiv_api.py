@@ -71,12 +71,8 @@ class ArxivApi:
             raise ValueError(f"Could not find paper with arxiv_id: {arxiv_id}")
         return result
 
-    def fetch_record_metadata(self, arxiv_id: str) -> dict:
-        """
-        一次 API 请求取回与 Atom 记录相关的元数据（不含 venue/LLM）。
-        键：abstract, author_names, full_name, arxiv_comments
-        """
-        r = self.get_result(arxiv_id)
+    @staticmethod
+    def _metadata_from_result(r) -> dict:
         c = getattr(r, "comment", None)
         if c is None:
             c = ""
@@ -88,6 +84,72 @@ class ArxivApi:
             "full_name": (r.title or "").strip() if r.title else "",
             "arxiv_comments": c,
         }
+
+    @staticmethod
+    def _lookup_metadata_by_requested_id(index: dict[str, dict], requested: str) -> dict | None:
+        """用 get_short_id() 建索引；支持库内无版本号而 API 返回带 v 的情况。"""
+        if requested in index:
+            return index[requested]
+        prefix = requested + "v"
+        hits = [k for k in index if k.startswith(prefix)]
+        if hits:
+            hits.sort()
+            return index[hits[-1]]
+        return None
+
+    def _all_results_with_retry(self, search: arxiv.Search) -> list:
+        """消费整次 Search（可含多个 id_list），带 429 退避；持锁避免与并发单篇请求交错破坏 delay。"""
+        delays = (0.0, 12.0, 30.0)
+        last_err: HTTPError | None = None
+        for d in delays:
+            if d:
+                print(
+                    f"  arXiv API 限流 (HTTP 429)，{d:.0f}s 后重试批量查询 …",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(d)
+            try:
+                with self._lock:
+                    return list(self._client.results(search))
+            except HTTPError as e:
+                if e.status != 429:
+                    raise
+                last_err = e
+        assert last_err is not None
+        raise last_err
+
+    def fetch_record_metadata(self, arxiv_id: str) -> dict:
+        """
+        一次 API 请求取回与 Atom 记录相关的元数据（不含 venue/LLM）。
+        键：abstract, author_names, full_name, arxiv_comments
+        """
+        return self._metadata_from_result(self.get_result(arxiv_id))
+
+    def fetch_record_metadata_batch(self, arxiv_ids: list[str]) -> dict[str, dict | None]:
+        """
+        多个 arxiv_id 合并为少量 id_list 请求（按块分片，避免 URL 过长）。
+        返回：每个去重后的输入 id 对应一条元数据，未命中为 None。
+        环境变量 ARXIV_API_ID_LIST_CHUNK：每请求最多 id 数，默认 64。
+        """
+        if not arxiv_ids:
+            return {}
+        chunk_sz = int(os.environ.get("ARXIV_API_ID_LIST_CHUNK", "64") or "64")
+        if chunk_sz < 1:
+            chunk_sz = 64
+        unique = list(dict.fromkeys(arxiv_ids))
+        index: dict[str, dict] = {}
+        for i in range(0, len(unique), chunk_sz):
+            chunk = unique[i : i + chunk_sz]
+            print(
+                f"Fetching arXiv metadata batch (id_list n={len(chunk)}) …",
+                flush=True,
+            )
+            search = arxiv.Search(id_list=chunk)
+            for r in self._all_results_with_retry(search):
+                sid = r.get_short_id()
+                index[sid] = self._metadata_from_result(r)
+        return {aid: self._lookup_metadata_by_requested_id(index, aid) for aid in unique}
 
     def get_abstarct(self, arxiv_id: str):
         return self.get_result(arxiv_id).summary

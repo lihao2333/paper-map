@@ -25,11 +25,14 @@ def build_hover_info_from_dict(
     summary = info.get("summary") or ""
     summary_trunc = summary[:300] + ("..." if len(summary) > 300 else "")
     abstract = info.get("abstract") or ""
+    ac = (info.get("arxiv_comments") or "").strip()
+    arxiv_comments_trunc = ac[:500] + ("..." if len(ac) > 500 else "") if ac else ""
     tag_names = [t["tag_name"] for t in tags] if tags else []
     return {
         "full_name": info.get("full_name", ""),
         "abstract": abstract,
         "summary": summary_trunc,
+        "arxiv_comments": arxiv_comments_trunc,
         "company_names": info.get("company_names", []),
         "university_names": info.get("university_names", []),
         "author_names": info.get("author_names", []),
@@ -89,35 +92,59 @@ def pivot_matrix(data: List[Dict], group_key: str, db: Optional[Database] = None
     }
 
 
-def resolve_matrix_tag_rule(tag_rule: Optional[str]) -> Optional[str]:
-    """None 表示使用默认 venue.*；空字符串表示不按标签过滤；否则为标签 glob。"""
-    if tag_rule is None:
-        return "venue.*"
-    s = tag_rule.strip()
-    if s == "":
-        return None
-    return s
+def resolve_matrix_tag_patterns(
+    tag_rules: Optional[str],
+    tag_rule: Optional[str],
+) -> Optional[List[str]]:
+    """
+    解析矩阵标签筛选：多条 glob 为 OR（命中任一即保留）。
+    - tag_rules 优先：逗号分隔多个模式；空字符串表示不按标签筛选。
+    - 仅 tag_rule（旧参数）：单个模式；空字符串表示不按标签筛选。
+    - 二者皆未传：不按标签筛选（与空 tag_rules 一致）。
+    """
+    if tag_rules is not None:
+        s = tag_rules.strip()
+        if s == "":
+            return None
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        return parts if parts else None
+    if tag_rule is not None:
+        s = tag_rule.strip()
+        if s == "":
+            return None
+        return [s]
+    return None
 
 
-def filter_matrix_by_tag_rule(data: List[Dict], tag_rule: Optional[str], db: Database) -> List[Dict]:
-    pattern = resolve_matrix_tag_rule(tag_rule)
-    if not pattern:
+def filter_matrix_by_tag_patterns(
+    data: List[Dict],
+    patterns: Optional[List[str]],
+    db: Database,
+) -> List[Dict]:
+    if not patterns:
         return data
-    allowed = db.get_paper_ids_matching_tag_glob(pattern)
+    allowed: set = set()
+    for p in patterns:
+        allowed |= db.get_paper_ids_matching_tag_glob(p)
     return [row for row in data if row["paper_id"] in allowed]
 
 
 @router.get("/companies")
 async def get_company_matrix(
+    tag_rules: Optional[str] = Query(
+        None,
+        description="逗号分隔的多个标签 glob（OR）；未传或空字符串表示不按标签筛选",
+    ),
     tag_rule: Optional[str] = Query(
         None,
-        description="标签名 glob（* ?）；缺省为 venue.*；传空字符串表示不按标签筛选",
+        description="兼容旧版单个 glob；与 tag_rules 同时出现时以 tag_rules 为准",
     ),
     db: Database = Depends(get_db),
 ):
     """获取公司-论文矩阵"""
     data = db.get_car_company_paper_matrix()
-    data = filter_matrix_by_tag_rule(data, tag_rule, db)
+    patterns = resolve_matrix_tag_patterns(tag_rules, tag_rule)
+    data = filter_matrix_by_tag_patterns(data, patterns, db)
     result = pivot_matrix(data, "company_name", db)
     return {
         "companies": result["headers"],
@@ -127,15 +154,20 @@ async def get_company_matrix(
 
 @router.get("/universities")
 async def get_university_matrix(
+    tag_rules: Optional[str] = Query(
+        None,
+        description="逗号分隔的多个标签 glob（OR）；未传或空字符串表示不按标签筛选",
+    ),
     tag_rule: Optional[str] = Query(
         None,
-        description="标签名 glob（* ?）；缺省为 venue.*；传空字符串表示不按标签筛选",
+        description="兼容旧版单个 glob；与 tag_rules 同时出现时以 tag_rules 为准",
     ),
     db: Database = Depends(get_db),
 ):
     """获取高校-论文矩阵"""
     data = db.get_university_paper_matrix()
-    data = filter_matrix_by_tag_rule(data, tag_rule, db)
+    patterns = resolve_matrix_tag_patterns(tag_rules, tag_rule)
+    data = filter_matrix_by_tag_patterns(data, patterns, db)
     result = pivot_matrix(data, "university_name", db)
     return {
         "universities": result["headers"],
@@ -145,15 +177,20 @@ async def get_university_matrix(
 
 @router.get("/authors")
 async def get_author_matrix(
+    tag_rules: Optional[str] = Query(
+        None,
+        description="逗号分隔的多个标签 glob（OR）；未传或空字符串表示不按标签筛选",
+    ),
     tag_rule: Optional[str] = Query(
         None,
-        description="标签名 glob（* ?）；缺省为 venue.*；传空字符串表示不按标签筛选",
+        description="兼容旧版单个 glob；与 tag_rules 同时出现时以 tag_rules 为准",
     ),
     db: Database = Depends(get_db),
 ):
     """获取作者-论文矩阵"""
     data = db.get_watched_author_paper_matrix()
-    data = filter_matrix_by_tag_rule(data, tag_rule, db)
+    patterns = resolve_matrix_tag_patterns(tag_rules, tag_rule)
+    data = filter_matrix_by_tag_patterns(data, patterns, db)
     result = pivot_matrix(data, "author_name", db)
     return {
         "authors": result["headers"],

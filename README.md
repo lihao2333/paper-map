@@ -136,14 +136,14 @@ paper-map/
 | GET    | /api/matrix/companies     | 公司矩阵 |
 | GET    | /api/matrix/universities  | 高校矩阵 |
 | GET    | /api/matrix/authors       | 作者矩阵 |
-
-矩阵接口支持查询参数 `tag_rule`：标签名 glob（`*`、`?` 转为 SQL LIKE），**缺省为 `venue.*`**（仅保留带顶会类标签的论文）；传 **`tag_rule=` 空字符串** 表示不按标签筛选。
 | GET    | /api/tags                 | 标签列表 |
 | GET    | /api/tags/tree            | 标签树   |
 | POST   | /api/collect              | 收集论文 |
 | GET    | /api/watched/companies    | 关注公司 |
 | GET    | /api/watched/universities | 关注高校 |
 | GET    | /api/watched/authors      | 关注作者 |
+
+矩阵接口查询参数 **`tag_rules`**：逗号分隔的多个标签 glob（`*`、`?` 转为 SQL LIKE），**OR** 语义（命中任一即保留）。**缺省或未传**、**`tag_rules=` 空字符串** 均表示不按标签筛选。兼容旧参数 **`tag_rule`**（单个 glob）；若与 `tag_rules` 同时出现，以 `tag_rules` 为准。
 
 ## 开发
 

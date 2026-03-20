@@ -11,8 +11,8 @@ const headers = ref<string[]>([])
 const rows = ref<any[]>([])
 const headerRules = ref<Record<string, string[]>>({})
 const loading = ref(false)
-/** 默认仅显示带顶会类标签（venue.*）的论文；空字符串表示不按标签筛选 */
-const matrixTagRule = ref('venue.*')
+/** 默认不按标签筛选；多条为「或」 */
+const matrixTagRules = ref<string[]>([])
 
 /** 按名称分组，收集所有 match_rule */
 function buildHeaderRules(items: { name: string; match_rule: string }[]): Record<string, string[]> {
@@ -28,7 +28,7 @@ async function fetchData() {
   loading.value = true
   try {
     const [matrixData, watched] = await Promise.all([
-      api.getCompanyMatrix({ tag_rule: matrixTagRule.value }),
+      api.getCompanyMatrix({ tag_rules: matrixTagRules.value }),
       api.getWatchedCompanies(),
     ])
     headers.value = matrixData.companies
@@ -43,13 +43,13 @@ async function fetchData() {
 
 onMounted(fetchData)
 
-watchDebounced(matrixTagRule, () => fetchData(), { debounce: 400 })
+watchDebounced(matrixTagRules, () => fetchData(), { debounce: 400, deep: true })
 </script>
 
 <template>
   <div class="flex flex-col flex-1 min-h-0">
     <Teleport to="#header-companies-teleport">
-      <div class="flex items-center justify-between w-full gap-4">
+      <div class="flex w-full flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div class="flex items-center gap-3 min-w-0">
           <div class="flex items-center justify-center h-8 w-8 rounded-lg bg-primary/10 shrink-0">
             <Building2 class="h-4 w-4 text-primary" />
@@ -58,14 +58,16 @@ watchDebounced(matrixTagRule, () => fetchData(), { debounce: 400 })
             关注公司 <span class="text-muted-foreground font-normal">· 显示关注公司发表的论文矩阵</span>
           </h1>
         </div>
-        <div class="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <MatrixTagRuleBar v-model="matrixTagRule" />
+        <div class="flex w-full min-w-0 flex-col items-stretch gap-2 sm:w-auto sm:max-w-none sm:flex-row sm:flex-wrap sm:items-start sm:justify-end">
+          <MatrixTagRuleBar v-model="matrixTagRules" class="min-w-0 max-w-full flex-1" />
+          <div class="flex flex-wrap items-center justify-end gap-2 shrink-0">
           <Badge variant="secondary">{{ headers.length }} 个公司</Badge>
           <Badge variant="outline">{{ rows.length }} 篇论文</Badge>
           <Button variant="outline" size="sm" :disabled="loading" @click="fetchData">
             <RefreshCw :class="['h-3.5 w-3.5 mr-1.5', loading && 'animate-spin']" />
             刷新
           </Button>
+          </div>
         </div>
       </div>
     </Teleport>
