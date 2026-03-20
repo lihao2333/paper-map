@@ -4,6 +4,7 @@ PaperMap FastAPI 后端
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import sys
 from pathlib import Path
 
@@ -19,10 +20,20 @@ from backend.routers import (
     collect_router,
 )
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from database import Database
+    db_path = Path(__file__).parent.parent / "data" / "database.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    Database(str(db_path)).construct()
+    yield
+
+
 app = FastAPI(
     title="PaperMap API",
     description="论文管理系统 API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # 修改操作口令保护（口令存于环境变量 PAPER_MAP_PASSWORD，不泄露于代码）

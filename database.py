@@ -268,7 +268,29 @@ class Database:
         
         conn.commit()
         conn.close()
-    
+
+        self._migrate_tags()
+
+    # 历史标签重命名记录：old_name -> new_name
+    # 只追加，不删除（幂等：旧标签不存在时自动跳过）
+    _TAG_MIGRATIONS: List[Tuple[str, str]] = [
+        ("hf_daily_paper",    "hf.daily"),
+        ("hf_trending_paper", "hf.trending"),
+        ("hf_weekly_paper",   "hf.weekly"),
+        ("hf_monthly_paper",  "hf.monthly"),
+    ]
+
+    def _migrate_tags(self) -> None:
+        """将历史标签名迁移到新名称，幂等（旧名不存在则跳过）。"""
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT tag_id, tag_name FROM tag")
+            tags = {name: tid for tid, name in cursor.fetchall()}
+
+        for old, new in self._TAG_MIGRATIONS:
+            if old in tags:
+                self.update_tag_name(tags[old], new)
+
     def insert_paper(self, data):
         """
         插入论文数据

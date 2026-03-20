@@ -3,6 +3,12 @@ from typing import Optional, List, Dict, Any
 import sys
 from pathlib import Path
 
+# 自定义子标签排序：key 为父标签 full_path，value 为子标签名的期望顺序。
+# 不在列表中的子标签排在已定义项之后，仍按字母序。
+_TAG_CHILD_ORDER: Dict[str, List[str]] = {
+    "hf": ["daily", "weekly", "monthly", "trending"],
+}
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from database import Database, paper_list_sort_key
 from backend.schemas import Tag, TagCreate, TagUpdate, TagTreeNode, PaperTagRequest
@@ -50,14 +56,14 @@ def build_tag_tree(tags: List[Dict], db: Database) -> List[TagTreeNode]:
         for name, data in subtree.items():
             if name.startswith("_"):
                 continue
-            
+
             full_path = data.get("_full_path", name)
             children = convert_to_nodes(data.get("_children", {}), full_path)
-            
+
             total_count = data.get("_paper_count", 0)
             for child in children:
                 total_count += child.paper_count
-            
+
             nodes.append(TagTreeNode(
                 tag_id=data.get("_tag_id"),
                 tag_name=name,
@@ -65,8 +71,14 @@ def build_tag_tree(tags: List[Dict], db: Database) -> List[TagTreeNode]:
                 children=children,
                 paper_count=total_count
             ))
-        
-        return sorted(nodes, key=lambda x: x.tag_name)
+
+        custom_order = _TAG_CHILD_ORDER.get(prefix, [])
+        if custom_order:
+            order_map = {name: i for i, name in enumerate(custom_order)}
+            nodes.sort(key=lambda x: (order_map.get(x.tag_name, len(custom_order)), x.tag_name))
+        else:
+            nodes.sort(key=lambda x: x.tag_name)
+        return nodes
     
     return convert_to_nodes(tree)
 
@@ -159,8 +171,14 @@ async def get_tag_matrix(prefix: str, db: Database = Depends(get_db)):
     tag_ids = [t["tag_id"] for t in tags]
     matrix_data = db.get_tag_paper_matrix(tag_ids)
     
-    # 透视数据
-    tag_names = sorted(set(item["tag_name"] for item in matrix_data))
+    # 透视数据：按自定义顺序排列列头，fallback 到字母序
+    raw_tag_names = sorted(set(item["tag_name"] for item in matrix_data))
+    custom_order = _TAG_CHILD_ORDER.get(prefix, [])
+    if custom_order:
+        order_map = {f"{prefix}.{name}": i for i, name in enumerate(custom_order)}
+        tag_names = sorted(raw_tag_names, key=lambda t: (order_map.get(t, len(custom_order)), t))
+    else:
+        tag_names = raw_tag_names
     papers_map: Dict[str, Dict] = {}
     
     for item in matrix_data:

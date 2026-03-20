@@ -30,10 +30,10 @@ from fetch_hf_papers import (
     fetch_hf_weekly_papers,
 )
 
-HF_DAILY_TAG = "hf_daily_paper"
-HF_TRENDING_TAG = "hf_trending_paper"
-HF_WEEKLY_TAG = "hf_weekly_paper"
-HF_MONTHLY_TAG = "hf_monthly_paper"
+HF_DAILY_TAG = "hf.daily"
+HF_TRENDING_TAG = "hf.trending"
+HF_WEEKLY_TAG = "hf.weekly"
+HF_MONTHLY_TAG = "hf.monthly"
 
 ALL_HF_TAGS = [HF_DAILY_TAG, HF_TRENDING_TAG, HF_WEEKLY_TAG, HF_MONTHLY_TAG]
 
