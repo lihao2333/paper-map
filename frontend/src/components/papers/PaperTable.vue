@@ -2,7 +2,7 @@
 import type { Paper } from '@/types'
 import { Badge, Tooltip, PaperTooltip } from '@/components/ui'
 import { formatDate, truncate, generateArxivLink } from '@/lib/utils'
-import { ExternalLink } from 'lucide-vue-next'
+import { ExternalLink, Github } from 'lucide-vue-next'
 
 interface Props {
   papers: Paper[]
@@ -84,14 +84,14 @@ const emit = defineEmits<{
             </td>
             <td class="px-4 py-3 text-sm text-muted-foreground">
               <PaperTooltip
-                :hover-info="paper.abstract ? { full_name: paper.full_name || paper.alias, abstract: paper.abstract } : null"
+                :hover-info="paper.abstract ? { full_name: paper.full_name || paper.alias, abstract: paper.abstract, github_url: paper.github_url } : null"
               >
                 <span>{{ truncate(paper.abstract, 50) || '—' }}</span>
               </PaperTooltip>
             </td>
             <td class="px-4 py-3 text-sm text-muted-foreground">
               <PaperTooltip
-                :hover-info="paper.summary ? { full_name: paper.full_name || paper.alias, summary: paper.summary } : null"
+                :hover-info="paper.summary ? { full_name: paper.full_name || paper.alias, summary: paper.summary, github_url: paper.github_url } : null"
               >
                 <span>{{ truncate(paper.summary, 50) || '—' }}</span>
               </PaperTooltip>
@@ -139,6 +139,17 @@ const emit = defineEmits<{
                 @click.stop
               >
                 <ExternalLink class="h-4 w-4" />
+              </a>
+              <a
+                v-if="paper.github_url"
+                :href="paper.github_url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="link-visualized inline-flex p-1 hover:bg-accent rounded transition-colors"
+                title="GitHub"
+                @click.stop
+              >
+                <Github class="h-4 w-4 text-muted-foreground" />
               </a>
             </td>
           </tr>

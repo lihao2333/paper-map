@@ -17,7 +17,12 @@ def _dedupe_author_names(author_names_raw: str) -> list:
 
 
 def _paper_dict_from_view_row(row) -> dict:
-    """paper_based_view 行：含 arxiv_comments, is_comment_used, tag_names（GROUP_CONCAT）"""
+    """paper_based_view 行列序：
+    [0]paper_id [1]arxiv_id [2]paper_url [3]date [4]alias [5]full_name
+    [6]abstract [7]summary
+    [8]company_names [9]university_names [10]author_names
+    [11]arxiv_comments [12]is_comment_used [13]tag_names [14]github_url
+    """
     tag_raw = row[13] if len(row) > 13 else None
     tags = (
         [t.strip() for t in str(tag_raw).split(",") if t.strip()]
@@ -40,6 +45,7 @@ def _paper_dict_from_view_row(row) -> dict:
         "arxiv_comments": row[11],
         "is_comment_used": bool(row[12]) if row[12] is not None else False,
         "tags": tags,
+        "github_url": row[14] if len(row) > 14 else None,
     }
 
 
@@ -110,7 +116,8 @@ class Database:
                 alias TEXT,
                 full_name TEXT,
                 abstract TEXT,
-                summary TEXT
+                summary TEXT,
+                github_url TEXT
             )
         """) 
         cursor.execute("""
@@ -174,6 +181,11 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        # 为现有表添加 github_url 字段（如果不存在）
+        try:
+            cursor.execute("ALTER TABLE paper ADD COLUMN github_url TEXT")
+        except sqlite3.OperationalError:
+            pass
         
         # 创建关注公司配置表
         cursor.execute("""
@@ -228,7 +240,7 @@ class Database:
         # 作者按 author_order 排序（一作、二作等）
         cursor.execute("""
             CREATE VIEW paper_based_view AS
-            SELECT 
+            SELECT
                 p.paper_id,
                 p.arxiv_id,
                 p.paper_url,
@@ -242,7 +254,8 @@ class Database:
                 GROUP_CONCAT(pa.author_name, ', ' ORDER BY pa.author_order) AS author_names,
                 p.arxiv_comments,
                 p.is_comment_used,
-                GROUP_CONCAT(DISTINCT tg.tag_name) AS tag_names
+                GROUP_CONCAT(DISTINCT tg.tag_name) AS tag_names,
+                p.github_url
             FROM paper p
             LEFT JOIN paper_company pc ON p.paper_id = pc.paper_id
             LEFT JOIN paper_university pu ON p.paper_id = pu.paper_id
@@ -250,7 +263,7 @@ class Database:
             LEFT JOIN paper_tag plt ON p.paper_id = plt.paper_id
             LEFT JOIN tag tg ON plt.tag_id = tg.tag_id
             GROUP BY p.paper_id, p.arxiv_id, p.paper_url, p.date, p.alias, p.full_name, p.abstract, p.summary,
-                p.arxiv_comments, p.is_comment_used
+                p.arxiv_comments, p.is_comment_used, p.github_url
         """)
         
         conn.commit()
@@ -290,16 +303,17 @@ class Database:
                     alias = item.get("alias")
                     full_name = item.get("full_name")
                     abstract = item.get("abstract")
-                    
+                    github_url = item.get("github_url")
+
                     if not paper_id or not paper_url:
                         print(f"警告: 跳过无效数据，缺少 paper_id 或 paper_url: {item}")
                         continue
-                    
+
                     cursor.execute("""
-                        INSERT OR IGNORE INTO paper 
-                        (paper_id, arxiv_id, paper_url, date, alias, full_name, abstract) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (paper_id, arxiv_id, paper_url, date, alias, full_name, abstract))
+                        INSERT OR IGNORE INTO paper
+                        (paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, github_url)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, github_url))
             
             # 如果是元组格式（旧格式，向后兼容）
             elif isinstance(first_item, tuple):
@@ -457,15 +471,15 @@ class Database:
             cursor = conn.cursor()
             if paper_id:
                 cursor.execute("""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                     FROM paper_based_view WHERE paper_id = ?
                 """, (paper_id,))
             else:
                 cursor.execute("""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                     FROM paper_based_view WHERE arxiv_id = ?
                 """, (arxiv_id,))
-            
+
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -487,7 +501,7 @@ class Database:
             with sqlite3.connect(self._path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(f"""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                     FROM paper_based_view WHERE paper_id IN ({placeholders})
                 """, chunk)
                 for row in cursor.fetchall():
@@ -537,9 +551,9 @@ class Database:
             # 使用 LIKE 进行模糊匹配，支持 paper_id、arxiv_id、alias、full_name
             search_pattern = f"%{query}%"
             cursor.execute("""
-                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
-                FROM paper_based_view 
-                WHERE paper_id LIKE ? 
+                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
+                FROM paper_based_view
+                WHERE paper_id LIKE ?
                    OR arxiv_id LIKE ?
                    OR alias LIKE ?
                    OR full_name LIKE ?
@@ -970,7 +984,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                 FROM paper_based_view
                 ORDER BY
                     (CASE WHEN arxiv_id IS NOT NULL AND TRIM(arxiv_id) != '' THEN 1 ELSE 0 END) DESC,
@@ -1030,7 +1044,7 @@ class Database:
                 cursor.execute(
                     f"""
                     SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                           company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                           company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                     FROM paper_based_view
                     WHERE {where_sql}
                     ORDER BY
@@ -1053,7 +1067,7 @@ class Database:
             cursor.execute(
                 f"""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                 FROM paper_based_view
                 WHERE {where_sql}
                 ORDER BY
@@ -1113,7 +1127,7 @@ class Database:
             cursor.execute(
                 f"""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names, github_url
                 FROM paper_based_view
                 WHERE {where_sql}
                 ORDER BY
@@ -1704,6 +1718,31 @@ class Database:
                 })
             return results
     
+    def get_papers_by_tag_name(self, tag_name: str) -> list:
+        """Return list of paper_ids that have the given tag."""
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT pt.paper_id
+                FROM paper_tag pt
+                INNER JOIN tag t ON pt.tag_id = t.tag_id
+                WHERE t.tag_name = ?
+            """, (tag_name,))
+            return [row[0] for row in cursor.fetchall()]
+
+    def update_github_url(self, paper_id: str, github_url: str) -> bool:
+        """Update github_url for a paper (only if currently NULL or empty).
+
+        Returns True if the update changed a row, False if paper not found or github_url already set.
+        """
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE paper SET github_url = ?
+                WHERE paper_id = ? AND (github_url IS NULL OR github_url = '')
+            """, (github_url, paper_id))
+            return cursor.rowcount > 0
+
     def add_tag_to_paper(self, paper_id, tag_name):
         """
         为论文添加标签

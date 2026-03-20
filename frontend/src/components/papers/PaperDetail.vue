@@ -60,15 +60,27 @@ watch(() => props.open, (open) => {
           </button>
         </div>
         <h3 class="text-xl font-bold text-foreground">{{ paper.full_name || paper.alias }}</h3>
-        <a
-          :href="generateArxivLink(paper.arxiv_id, paper.paper_url)"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="link-visualized inline-flex h-10 items-center justify-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-md transition-all hover:bg-primary/90 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          <ExternalLink class="h-4 w-4 mr-2" />
-          打开链接
-        </a>
+        <div class="flex gap-2 flex-wrap">
+          <a
+            :href="generateArxivLink(paper.arxiv_id, paper.paper_url)"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="link-visualized inline-flex h-10 items-center justify-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-md transition-all hover:bg-primary/90 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <ExternalLink class="h-4 w-4 mr-2" />
+            打开链接
+          </a>
+          <a
+            v-if="paper.github_url"
+            :href="paper.github_url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="link-visualized inline-flex h-10 items-center justify-center rounded-lg border border-border bg-background px-4 text-sm font-semibold shadow-md transition-all hover:bg-accent hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <ExternalLink class="h-4 w-4 mr-2" />
+            GitHub
+          </a>
+        </div>
       </div>
 
       <!-- Authors -->

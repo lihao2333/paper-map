@@ -4,7 +4,7 @@ import type { TagTreeNode, Paper } from '@/types'
 import TagTree from '@/components/tags/TagTree.vue'
 import { Card, Button, Badge } from '@/components/ui'
 import * as api from '@/api'
-import { RefreshCw, ExternalLink } from 'lucide-vue-next'
+import { RefreshCw, ExternalLink, Github } from 'lucide-vue-next'
 import { formatDate, formatMonth, generateArxivLink, getMonthKey, truncate } from '@/lib/utils'
 
 const tagTree = ref<TagTreeNode[]>([])
@@ -151,9 +151,22 @@ onMounted(fetchTagTree)
                       {{ truncate(paper.summary, 200) }}
                     </p>
                   </div>
-                  <Button variant="ghost" size="icon" @click="openLink(paper)">
-                    <ExternalLink class="h-4 w-4" />
-                  </Button>
+                  <div class="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" @click="openLink(paper)">
+                      <ExternalLink class="h-4 w-4" />
+                    </Button>
+                    <Button
+                      v-if="paper.github_url"
+                      variant="ghost"
+                      size="icon"
+                      as="a"
+                      :href="paper.github_url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Github class="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>

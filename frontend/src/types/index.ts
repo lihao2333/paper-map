@@ -13,6 +13,7 @@ export interface Paper {
   university_names: string[]
   author_names: string[]
   tags: string[]
+  github_url: string | null
 }
 
 export interface PaperListResponse {
@@ -67,6 +68,7 @@ export interface HoverInfo {
   paper_id?: string
   arxiv_id?: string | null
   paper_url?: string
+  github_url?: string | null
 }
 
 export interface MatrixRow {

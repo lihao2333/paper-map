@@ -143,7 +143,7 @@ where python   # Windows
 **核心依赖（运行 FastAPI 后端必须安装）：**
 
 ```bash
-pip install fastapi uvicorn pydantic pysqlite3
+pip install fastapi uvicorn pydantic pysqlite3 requests beautifulsoup4
 ```
 
 > **注意**: 项目根目录的 `requirements.txt` 仅包含 Panel Dashboard 的依赖（`panel`, `pandas`, `param`），不包含 FastAPI 核心依赖。如果你只需要运行 Web 应用，上面的命令就够了。
@@ -284,7 +284,8 @@ setx DB_PATH "C:\custom\path\database.db"
 | `arxiv`                    | arXiv 论文搜索与收集 | `paper_collector.py`, `arxiv_api.py`, `search_and_insert_papers.py` |
 | `openai`                   | AI 摘要补全          | `ai_api.py`, `completer.py`                                         |
 | `tika`                     | PDF 解析             | `pdf_convertor.py`                                                  |
-| `requests`                 | HTTP 请求            | `add_arxiv_links.py`, `completer.py`, `ai_api.py`                   |
+| `requests`                 | HTTP 请求            | `add_arxiv_links.py`, `completer.py`, `ai_api.py`, `fetch_hf_papers.py`, `hf_paper_collector.py` |
+| `beautifulsoup4`           | HTML 解析            | `fetch_hf_papers.py`, `hf_paper_collector.py`                                                    |
 | `tqdm`                     | 进度条显示           | `completer.py`                                                      |
 | `panel`, `pandas`, `param` | Panel Dashboard      | `dashboard.py`                                                      |
 
@@ -293,6 +294,9 @@ setx DB_PATH "C:\custom\path\database.db"
 ```bash
 # arXiv 相关功能
 pip install arxiv
+
+# HuggingFace 论文采集（每日/趋势/每周/每月）
+pip install requests beautifulsoup4
 
 # AI 补全功能（需要 OpenAI API Key）
 pip install openai
@@ -305,7 +309,7 @@ pip install tika
 pip install panel pandas param
 
 # 批量安装所有可选依赖
-pip install arxiv openai tika requests tqdm panel pandas param
+pip install arxiv openai tika requests tqdm panel pandas param beautifulsoup4
 ```
 
 ---
@@ -429,6 +433,8 @@ paper-map/
 │   └── schemas/       # Pydantic 模型
 ├── data/              # 数据目录
 │   └── database.db    # SQLite 数据库（自动创建）
+├── fetch_hf_papers.py # HuggingFace 论文抓取
+├── hf_paper_collector.py # HF 论文采集入口
 ├── config.py          # 配置文件
 ├── database.py        # 数据库操作类
 ├── requirements.txt   # Python 依赖（仅 Panel Dashboard）

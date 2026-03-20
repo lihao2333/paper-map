@@ -145,6 +145,7 @@ def _build_hover_info(db: Database, paper_id: str) -> Dict:
         "paper_id": info.get("paper_id", ""),
         "arxiv_id": info.get("arxiv_id"),
         "paper_url": info.get("paper_url", ""),
+        "github_url": info.get("github_url"),
     }
 
 

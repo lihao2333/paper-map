@@ -39,6 +39,7 @@ def build_hover_info_from_dict(
         "paper_id": info.get("paper_id", ""),
         "arxiv_id": info.get("arxiv_id"),
         "paper_url": info.get("paper_url", ""),
+        "github_url": info.get("github_url"),
     }
 
 

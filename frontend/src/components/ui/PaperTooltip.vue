@@ -14,6 +14,7 @@ export interface HoverInfo {
   paper_id?: string
   arxiv_id?: string | null
   paper_url?: string
+  github_url?: string | null
 }
 
 interface Props {
@@ -56,6 +57,7 @@ const tooltipBlocks = computed<TooltipBlock[]>(() => {
     if (h.university_names?.length) pushText(`🎓 高校: ${h.university_names.join(', ')}`)
   }
   if (h.tag_names?.length) pushText(`🏷️ 标签: ${h.tag_names.join(', ')}`)
+  if (h.github_url) pushText(`🔗 GitHub: ${h.github_url}`)
 
   return blocks
 })

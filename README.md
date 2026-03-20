@@ -5,6 +5,7 @@
 ## 功能特性
 
 - **论文管理**: 收集、搜索、筛选论文
+- **HuggingFace 集成**: 自动抓取 HF 每日/趋势/每周/每月论文，含 GitHub 链接
 - **矩阵视图**: 按公司/高校/作者/标签查看论文矩阵
 - **标签系统**: 层级标签树，支持多级标签
 - **关注列表**: 管理关注的公司、高校、作者
@@ -57,7 +58,7 @@ export PAPER_MAP_BASE_URL=https://api.openai.com/v1
 
 ```bash
 # 后端依赖
-pip install fastapi uvicorn pydantic pysqlite3
+pip install fastapi uvicorn pydantic pysqlite3 requests beautifulsoup4
 
 # 前端依赖
 cd frontend
@@ -114,6 +115,8 @@ paper-map/
 │   └── schemas/              # Pydantic 模型
 ├── database.py               # 数据库操作
 ├── completer.py              # AI 补全
+├── fetch_hf_papers.py        # HuggingFace 论文抓取
+├── hf_paper_collector.py     # HF 论文采集入口（每日/趋势/每周/每月）
 ├── link_parser.py            # 链接解析
 ├── config.py                 # 配置
 ├── data/                     # 数据目录

@@ -4,7 +4,7 @@ import { PopoverRoot, PopoverTrigger, PopoverAnchor, PopoverPortal, PopoverConte
 import AddTagPopover from '@/components/tags/AddTagPopover.vue'
 import type { HoverInfo } from '@/types'
 import { formatDate, generateArxivLink } from '@/lib/utils'
-import { Tag, X } from 'lucide-vue-next'
+import { Tag, X, Github } from 'lucide-vue-next'
 
 interface Props {
   hoverInfo: HoverInfo | null
@@ -166,6 +166,18 @@ const paperLink = computed(() => {
               {{ b.content }}
             </div>
           </template>
+        </div>
+
+        <div v-if="hoverInfo?.github_url" class="mb-3">
+          <a
+            :href="hoverInfo.github_url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 hover:underline"
+          >
+            <Github class="h-3.5 w-3.5" />
+            GitHub
+          </a>
         </div>
 
         <div class="border-t border-gray-200 my-3" />
