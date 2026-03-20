@@ -10,6 +10,8 @@ class PaperBase(BaseModel):
     full_name: Optional[str] = None
     abstract: Optional[str] = None
     summary: Optional[str] = None
+    arxiv_comments: Optional[str] = None
+    is_comment_used: bool = False
 
 
 class PaperCreate(PaperBase):
@@ -24,6 +26,8 @@ class PaperUpdate(BaseModel):
     full_name: Optional[str] = None
     abstract: Optional[str] = None
     summary: Optional[str] = None
+    arxiv_comments: Optional[str] = None
+    is_comment_used: Optional[bool] = None
     company_names: Optional[List[str]] = None
     university_names: Optional[List[str]] = None
     author_names: Optional[List[str]] = None

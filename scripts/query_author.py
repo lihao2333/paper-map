@@ -15,6 +15,14 @@ import sys
 from lib import get_db, sqlite3
 
 
+def _tags_from_row(r: sqlite3.Row) -> list:
+    """与 database 中 tag_names（GROUP_CONCAT）解析一致"""
+    raw = r["tag_names"]
+    if raw is None:
+        return []
+    return [t.strip() for t in str(raw).split(",") if t.strip()]
+
+
 def query_author_papers(author_name: str, start_date: str, end_date: str) -> list[dict]:
     """
     按作者查询论文。
@@ -31,7 +39,7 @@ def query_author_papers(author_name: str, start_date: str, end_date: str) -> lis
         cur = conn.cursor()
         cur.execute("""
             SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                   company_names, university_names, author_names
+                   company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
             FROM paper_based_view
             WHERE author_names LIKE ? AND date BETWEEN ? AND ?
             ORDER BY date DESC, paper_id
@@ -49,6 +57,7 @@ def query_author_papers(author_name: str, start_date: str, end_date: str) -> lis
             "date": r["date"] or "",
             "abstract": r["abstract"] or "",
             "summary": r["summary"] or "",
+            "tags": _tags_from_row(r),
         })
     return result
 

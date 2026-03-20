@@ -7,6 +7,8 @@ export interface Paper {
   full_name: string
   abstract: string
   summary: string
+  arxiv_comments: string | null
+  is_comment_used: boolean
   company_names: string[]
   university_names: string[]
   author_names: string[]

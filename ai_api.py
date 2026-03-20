@@ -1,5 +1,6 @@
 # Please install OpenAI SDK first: `pip3 install openai`
 import os
+import re
 import json
 import urllib.request
 import urllib.error
@@ -90,6 +91,9 @@ class AiApi:
         if _OPENAI_AVAILABLE and self._api_key:
             self._client = OpenAI(api_key=self._api_key, base_url=base_url)
 
+    def is_llm_configured(self) -> bool:
+        """是否具备发起 chat 补全的配置（与 extract_venue_tag_from_comment 等一致）。"""
+        return bool((self._api_url and self._api_key) or self._client)
 
     def _chat(self, messages: list, timeout: int = 120) -> str:
         """
@@ -279,7 +283,72 @@ class AiApi:
             truncated = truncated[:last_period + 1]
         
         return truncated + "\n\n[文本已截断，仅保留前部分内容]"
-    
+
+    def extract_venue_tag_from_comment(self, comment: str):
+        """
+        用 LLM 从 arXiv comment 提取顶会标签，返回 venue.NeurIPS（不含年份）或 None。
+        未配置 API 时返回 None。
+        """
+        if not comment or not comment.strip():
+            return None
+        if not self.is_llm_configured():
+            return None
+        snippet = comment.strip()[:3000]
+        content = self._chat(
+            [
+                {
+                    "role": "system",
+                    "content": "You extract conference venue from arXiv metadata comments. Reply with JSON only. Do not include year in the tag.",
+                },
+                {
+                    "role": "user",
+                    "content": """Below is an arXiv "comment" field (may mention acceptance to a conference).
+If it clearly states a peer-reviewed conference or journal venue, return:
+{"venue":"SHORT_NAME"}
+SHORT_NAME must be the venue only, no year (e.g. NeurIPS, ICLR, CVPR, ICCV, ECCV, ICML, ACL, EMNLP, SIGGRAPH — no spaces).
+If the comment only has arXiv categories / generic text / no identifiable venue, return:
+null
+
+Comment:
+"""
+                    + snippet,
+                },
+            ],
+            timeout=60,
+        )
+        raw = (content or "").strip()
+        if raw.lower() in ("null", "none", ""):
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    payload = json.loads(raw[start : end + 1])
+                except json.JSONDecodeError:
+                    return None
+            else:
+                return None
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        venue = payload.get("venue")
+        if not venue:
+            return None
+        v = str(venue).strip()
+        if not v:
+            return None
+        slug = re.sub(r"[^A-Za-z0-9\-]", "", v.replace(" ", ""))
+        slug = re.sub(r"\d{4}$", "", slug)
+        if not slug:
+            return None
+        from config import TAG_SEPARATOR, VENUE_TAG_PREFIX
+
+        return f"{VENUE_TAG_PREFIX}{TAG_SEPARATOR}{slug}"
+
     def quyer_paper_info(self, paper_text):
         """
         从 paper 中提取所有关键信息

@@ -4,6 +4,8 @@ except ImportError:
     import sqlite3
 import json
 import os
+import re
+from typing import List, Optional, Tuple
 
 
 def _dedupe_author_names(author_names_raw: str) -> list:
@@ -12,6 +14,32 @@ def _dedupe_author_names(author_names_raw: str) -> list:
         return []
     names = [n.strip() for n in author_names_raw.split(",") if n.strip()]
     return list(dict.fromkeys(names))
+
+
+def _paper_dict_from_view_row(row) -> dict:
+    """paper_based_view 行：含 arxiv_comments, is_comment_used, tag_names（GROUP_CONCAT）"""
+    tag_raw = row[13] if len(row) > 13 else None
+    tags = (
+        [t.strip() for t in str(tag_raw).split(",") if t.strip()]
+        if tag_raw
+        else []
+    )
+    return {
+        "paper_id": row[0],
+        "arxiv_id": row[1],
+        "paper_url": row[2],
+        "date": row[3],
+        "alias": row[4] or "",
+        "full_name": row[5] or "",
+        "abstract": row[6] or "",
+        "summary": row[7] or "",
+        "company_names": row[8].split(",") if row[8] else [],
+        "university_names": row[9].split(",") if row[9] else [],
+        "author_names": _dedupe_author_names(row[10] or ""),
+        "arxiv_comments": row[11] or "",
+        "is_comment_used": bool(row[12]) if row[12] is not None else False,
+        "tags": tags,
+    }
 
 
 class Database:
@@ -120,6 +148,17 @@ class Database:
         except sqlite3.OperationalError:
             # 字段已存在，忽略错误
             pass
+
+        try:
+            cursor.execute("ALTER TABLE paper ADD COLUMN arxiv_comments TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute(
+                "ALTER TABLE paper ADD COLUMN is_comment_used INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
         
         # 创建关注公司配置表
         cursor.execute("""
@@ -185,12 +224,18 @@ class Database:
                 p.summary,
                 GROUP_CONCAT(DISTINCT pc.company_name) AS company_names,
                 GROUP_CONCAT(DISTINCT pu.university_name) AS university_names,
-                GROUP_CONCAT(pa.author_name, ', ' ORDER BY pa.author_order) AS author_names
+                GROUP_CONCAT(pa.author_name, ', ' ORDER BY pa.author_order) AS author_names,
+                p.arxiv_comments,
+                p.is_comment_used,
+                GROUP_CONCAT(DISTINCT tg.tag_name) AS tag_names
             FROM paper p
             LEFT JOIN paper_company pc ON p.paper_id = pc.paper_id
             LEFT JOIN paper_university pu ON p.paper_id = pu.paper_id
             LEFT JOIN paper_author pa ON p.paper_id = pa.paper_id
-            GROUP BY p.paper_id, p.arxiv_id, p.paper_url, p.date, p.alias, p.full_name, p.abstract, p.summary
+            LEFT JOIN paper_tag plt ON p.paper_id = plt.paper_id
+            LEFT JOIN tag tg ON plt.tag_id = tg.tag_id
+            GROUP BY p.paper_id, p.arxiv_id, p.paper_url, p.date, p.alias, p.full_name, p.abstract, p.summary,
+                p.arxiv_comments, p.is_comment_used
         """)
         
         conn.commit()
@@ -381,10 +426,13 @@ class Database:
             "alias": "xx",
             "full_name": "xx",
             "abstract": "xx",
-            "summary": "xx"
+            "summary": "xx",
             "company_names": ["xx", "xx"],
             "university_names": ["xx", "xx"],
-            "author_names": ["xx", "xx"]
+            "author_names": ["xx", "xx"],
+            "arxiv_comments": "xx",
+            "is_comment_used": bool,
+            "tags": ["xx", "xx"]
         }
         """
         if not paper_id and not arxiv_id:
@@ -394,31 +442,19 @@ class Database:
             cursor = conn.cursor()
             if paper_id:
                 cursor.execute("""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                     FROM paper_based_view WHERE paper_id = ?
                 """, (paper_id,))
             else:
                 cursor.execute("""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                     FROM paper_based_view WHERE arxiv_id = ?
                 """, (arxiv_id,))
             
             row = cursor.fetchone()
             if row is None:
                 return None
-            return {
-                "paper_id": row[0],
-                "arxiv_id": row[1],
-                "paper_url": row[2],
-                "date": row[3],
-                "alias": row[4],
-                "full_name": row[5],
-                "abstract": row[6],
-                "summary": row[7],
-                "company_names": row[8].split(',') if row[8] else [],
-                "university_names": row[9].split(',') if row[9] else [],
-                "author_names": _dedupe_author_names(row[10] or "")
-            }
+            return _paper_dict_from_view_row(row)
 
     def get_papers_info_batch(self, paper_ids: list) -> dict:
         """
@@ -436,23 +472,11 @@ class Database:
             with sqlite3.connect(self._path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(f"""
-                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names
+                    SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                     FROM paper_based_view WHERE paper_id IN ({placeholders})
                 """, chunk)
                 for row in cursor.fetchall():
-                    result[row[0]] = {
-                        "paper_id": row[0],
-                        "arxiv_id": row[1],
-                        "paper_url": row[2],
-                        "date": row[3],
-                        "alias": row[4],
-                        "full_name": row[5],
-                        "abstract": row[6],
-                        "summary": row[7],
-                        "company_names": row[8].split(",") if row[8] else [],
-                        "university_names": row[9].split(",") if row[9] else [],
-                        "author_names": _dedupe_author_names(row[10] or ""),
-                    }
+                    result[row[0]] = _paper_dict_from_view_row(row)
         return result
 
     def get_papers_tags_batch(self, paper_ids: list) -> dict:
@@ -498,7 +522,7 @@ class Database:
             # 使用 LIKE 进行模糊匹配，支持 paper_id、arxiv_id、alias、full_name
             search_pattern = f"%{query}%"
             cursor.execute("""
-                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names
+                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary, company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view 
                 WHERE paper_id LIKE ? 
                    OR arxiv_id LIKE ?
@@ -524,19 +548,7 @@ class Database:
             
             results = []
             for row in cursor.fetchall():
-                results.append({
-                    "paper_id": row[0],
-                    "arxiv_id": row[1],
-                    "paper_url": row[2],
-                    "date": row[3],
-                    "alias": row[4],
-                    "full_name": row[5],
-                    "abstract": row[6],
-                    "summary": row[7],
-                    "company_names": row[8].split(',') if row[8] else [],
-                    "university_names": row[9].split(',') if row[9] else [],
-                    "author_names": _dedupe_author_names(row[10] or "")
-                })
+                results.append(_paper_dict_from_view_row(row))
             return results
 
     def update_paper_info(self, data):
@@ -571,6 +583,8 @@ class Database:
         company_data = []
         university_data = []
         author_data = []
+        arxiv_comments_data = []
+        is_comment_used_data = []
         
         for item in data:
             # 优先使用 paper_id，如果没有则使用 arxiv_id（向后兼容）
@@ -635,6 +649,14 @@ class Database:
                     "paper_id": paper_id,
                     "author_names": author_names
                 })
+
+            ac = item.get("arxiv_comments")
+            if ac is not None:
+                arxiv_comments_data.append((ac, paper_id))
+
+            icu = item.get("is_comment_used")
+            if icu is not None:
+                is_comment_used_data.append((1 if icu else 0, paper_id))
         
         # 调用辅助方法更新数据
         if abstract_data:
@@ -653,6 +675,10 @@ class Database:
             self._update_paper_university_names(university_data)
         if author_data:
             self._update_paper_author_names(author_data)
+        if arxiv_comments_data:
+            self._update_paper_arxiv_comments(arxiv_comments_data)
+        if is_comment_used_data:
+            self._update_paper_is_comment_used(is_comment_used_data)
 
     def _update_paper_abstract(self, data):
         """
@@ -706,6 +732,28 @@ class Database:
             cursor = conn.cursor()
             cursor.executemany("""
                 UPDATE paper SET date = ? WHERE paper_id = ?
+            """, data)
+            conn.commit()
+
+    def _update_paper_arxiv_comments(self, data):
+        """
+        data: [(arxiv_comments, paper_id), ...]
+        """
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.executemany("""
+                UPDATE paper SET arxiv_comments = ? WHERE paper_id = ?
+            """, data)
+            conn.commit()
+
+    def _update_paper_is_comment_used(self, data):
+        """
+        data: [(0|1, paper_id), ...]
+        """
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.executemany("""
+                UPDATE paper SET is_comment_used = ? WHERE paper_id = ?
             """, data)
             conn.commit()
     
@@ -894,55 +942,24 @@ class Database:
                 "abstract": "...",
                 "summary": "...",
                 "company_names": ["...", "..."],
-                "university_names": ["...", "..."]
+                "university_names": ["...", "..."],
+                "author_names": ["...", "..."],
+                "arxiv_comments": "...",
+                "is_comment_used": bool,
+                "tags": ["...", "..."]
             },
             ...
         ]
         """
         with sqlite3.connect(self._path) as conn:
             cursor = conn.cursor()
-            
-            # 获取所有论文
-            cursor.execute("SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary FROM paper")
-            papers = cursor.fetchall()
-            
-            result = []
-            for paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary in papers:
-                # 获取公司名称
-                cursor.execute("""
-                    SELECT company_name FROM paper_company WHERE paper_id = ?
-                """, (paper_id,))
-                company_names = [row[0] for row in cursor.fetchall()]
-                
-                # 获取大学名称
-                cursor.execute("""
-                    SELECT university_name FROM paper_university WHERE paper_id = ?
-                """, (paper_id,))
-                university_names = [row[0] for row in cursor.fetchall()]
-                
-                # 获取作者名称（按顺序：一作、二作等）
-                cursor.execute("""
-                    SELECT author_name FROM paper_author 
-                    WHERE paper_id = ? 
-                    ORDER BY author_order
-                """, (paper_id,))
-                author_names = [row[0] for row in cursor.fetchall()]
-                
-                result.append({
-                    "paper_id": paper_id,
-                    "arxiv_id": arxiv_id,
-                    "paper_url": paper_url,
-                    "date": date,
-                    "alias": alias or "",
-                    "full_name": full_name or "",
-                    "abstract": abstract or "",
-                    "summary": summary or "",
-                    "company_names": company_names,
-                    "university_names": university_names,
-                    "author_names": author_names
-                })
-            
-            return result
+            cursor.execute("""
+                SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
+                FROM paper_based_view
+                ORDER BY date DESC, paper_id DESC
+            """)
+            return [_paper_dict_from_view_row(row) for row in cursor.fetchall()]
 
     def query_papers(
         self,
@@ -994,7 +1011,7 @@ class Database:
                 cursor.execute(
                     f"""
                     SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                           company_names, university_names, author_names
+                           company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                     FROM paper_based_view
                     WHERE {where_sql}
                     ORDER BY date DESC, paper_id
@@ -1002,54 +1019,25 @@ class Database:
                     params,
                 )
                 rows = cursor.fetchall()
-                # 再按 tag 过滤
                 result = []
+                needle = tag.lower()
                 for row in rows:
-                    paper_id = row[0]
-                    paper_tags = self.get_paper_tags(paper_id)
-                    tag_names = [t["tag_name"] for t in paper_tags]
-                    if any(tag.lower() in t.lower() for t in tag_names):
-                        result.append({
-                            "paper_id": row[0],
-                            "arxiv_id": row[1],
-                            "paper_url": row[2],
-                            "date": row[3],
-                            "alias": row[4] or "",
-                            "full_name": row[5] or "",
-                            "abstract": row[6] or "",
-                            "summary": row[7] or "",
-                            "company_names": row[8].split(",") if row[8] else [],
-                            "university_names": row[9].split(",") if row[9] else [],
-                            "author_names": _dedupe_author_names(row[10] or ""),
-                        })
+                    d = _paper_dict_from_view_row(row)
+                    if any(needle in t.lower() for t in d["tags"]):
+                        result.append(d)
                 return result
 
             cursor.execute(
                 f"""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view
                 WHERE {where_sql}
                 ORDER BY date DESC, paper_id
                 """,
                 params,
             )
-            result = []
-            for row in cursor.fetchall():
-                result.append({
-                    "paper_id": row[0],
-                    "arxiv_id": row[1],
-                    "paper_url": row[2],
-                    "date": row[3],
-                    "alias": row[4] or "",
-                    "full_name": row[5] or "",
-                    "abstract": row[6] or "",
-                    "summary": row[7] or "",
-                    "company_names": row[8].split(",") if row[8] else [],
-                    "university_names": row[9].split(",") if row[9] else [],
-                    "author_names": _dedupe_author_names(row[10] or ""),
-                })
-            return result
+            return [_paper_dict_from_view_row(row) for row in cursor.fetchall()]
 
     def query_papers(
         self,
@@ -1098,7 +1086,7 @@ class Database:
             cursor.execute(
                 f"""
                 SELECT paper_id, arxiv_id, paper_url, date, alias, full_name, abstract, summary,
-                       company_names, university_names, author_names
+                       company_names, university_names, author_names, arxiv_comments, is_comment_used, tag_names
                 FROM paper_based_view
                 WHERE {where_sql}
                 ORDER BY date DESC, paper_id
@@ -1124,25 +1112,7 @@ class Database:
                 valid_ids = {r[0] for r in cursor.fetchall()}
                 rows = [r for r in rows if r[0] in valid_ids]
 
-            result = []
-            for row in rows:
-                company_names = row[8].split(",") if row[8] else []
-                university_names = row[9].split(",") if row[9] else []
-                author_names = _dedupe_author_names(row[10] or "")
-                result.append({
-                    "paper_id": row[0],
-                    "arxiv_id": row[1],
-                    "paper_url": row[2],
-                    "date": row[3],
-                    "alias": row[4] or "",
-                    "full_name": row[5] or "",
-                    "abstract": row[6] or "",
-                    "summary": row[7] or "",
-                    "company_names": company_names,
-                    "university_names": university_names,
-                    "author_names": author_names,
-                })
-            return result
+            return [_paper_dict_from_view_row(row) for row in rows]
 
     def get_company_paper_matrix(self):
         """
@@ -1815,6 +1785,69 @@ class Database:
                 """, (new_tag_name, tag_id))
             
             conn.commit()
+
+    @staticmethod
+    def _venue_tag_without_trailing_year(tag_name: str) -> Optional[str]:
+        """
+        venue.NeurIPS2024 -> venue.NeurIPS；已是 venue.ICLR 或无法识别则返回 None。
+        与 ai_api 去掉年份的规则一致（末尾 4 位为 1990–2100 的年份）。
+        """
+        from config import TAG_SEPARATOR, VENUE_TAG_PREFIX
+
+        prefix = f"{VENUE_TAG_PREFIX}{TAG_SEPARATOR}"
+        if not tag_name.startswith(prefix):
+            return None
+        rest = tag_name[len(prefix) :]
+        m = re.match(r"^(.+)(\d{4})$", rest)
+        if not m:
+            return None
+        y = int(m.group(2))
+        if not (1990 <= y <= 2100):
+            return None
+        base = m.group(1)
+        if not base:
+            return None
+        return prefix + base
+
+    def migrate_venue_tags_strip_year(self, dry_run: bool = False) -> dict:
+        """
+        将库中 venue.* 标签去掉末尾年份（venue.NeurIPS2024 -> venue.NeurIPS）。
+        依赖已有 update_tag_name 的合并逻辑处理同名冲突。
+
+        :param dry_run: 为 True 时不写库，仅统计与列出将变更项
+        :return: {"examined", "changed", "unchanged", "moves": [(old, new, tag_id), ...]}
+        """
+        from config import TAG_SEPARATOR, VENUE_TAG_PREFIX
+
+        prefix = f"{VENUE_TAG_PREFIX}{TAG_SEPARATOR}"
+        with sqlite3.connect(self._path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT tag_id, tag_name FROM tag WHERE tag_name LIKE ? ORDER BY tag_id",
+                (prefix + "%",),
+            )
+            rows: List[Tuple[int, str]] = cursor.fetchall()
+
+        moves = []
+        examined = 0
+        unchanged = 0
+        for tag_id, tag_name in rows:
+            examined += 1
+            new_name = self._venue_tag_without_trailing_year(tag_name)
+            if new_name is None or new_name == tag_name:
+                unchanged += 1
+                continue
+            moves.append((tag_name, new_name, tag_id))
+            if not dry_run:
+                self.update_tag_name(tag_id, new_name)
+
+        return {
+            "examined": examined,
+            "changed": len(moves),
+            "unchanged": unchanged,
+            "moves": moves,
+            "dry_run": dry_run,
+        }
     
     # ========== 关注公司管理方法 ==========
     def get_all_watched_companies(self):

@@ -159,6 +159,8 @@ SEARCH_DELAY = 300  # 毫秒
 # 标签配置
 TAG_SEPARATOR = "."
 MAX_TAG_DEPTH = 10
+# 从 arXiv comment 解析出的顶会标签前缀，完整标签形如 venue.NeurIPS（不含年份）
+VENUE_TAG_PREFIX = "venue"
 
 # ==================== 环境变量支持 ====================
 # 允许通过环境变量覆盖配置

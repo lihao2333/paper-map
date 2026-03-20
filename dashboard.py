@@ -42,6 +42,11 @@ body {{
     color: {config.THEME_SECONDARY} !important;
     text-decoration: underline !important;
 }}
+.tabulator-row .tabulator-cell[data-field="Tags"] {{
+    white-space: normal !important;
+    max-width: 360px;
+    vertical-align: top;
+}}
 
 /* 表头样式 */
 .tabulator-header {{
@@ -159,6 +164,26 @@ def parse_paper_link(paper_link):
     except Exception as e:
         print(f"解析链接失败: {e}")
         return None
+
+
+def format_paper_tags_html(tag_names) -> str:
+    """论文列表 Tags 列：徽章 HTML，供 Tabulator html formatter 使用。"""
+    if not tag_names:
+        return ""
+    parts = []
+    for t in tag_names:
+        if not t:
+            continue
+        ts = str(t).strip()
+        if not ts:
+            continue
+        parts.append(
+            '<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:2px 8px;'
+            'margin:2px 4px 2px 0;border-radius:12px;font-size:11px;white-space:nowrap;">'
+            f"{html.escape(ts)}</span>"
+        )
+    return " ".join(parts)
+
 
 def generate_paper_link(arxiv_id, paper_url):
     """生成论文链接"""
@@ -461,10 +486,8 @@ class PaperDashboard:
             # 创建 Paper Link 超链接
             paper_link_html = f'<a href="{paper_link}" target="_blank" style="color: #0066cc; text-decoration: underline;">{paper_link}</a>' if paper_link else ""
             
-            # 获取论文的标签
-            paper_tags = self.database.get_paper_tags(paper_id)
-            tag_names = [tag["tag_name"] for tag in paper_tags]
-            tags_display = ", ".join(tag_names) if tag_names else ""
+            tag_names = paper.get("tags") or []
+            tags_display = format_paper_tags_html(tag_names)
             
             records.append({
                 "Paper ID": display_id,
@@ -2172,7 +2195,11 @@ class PaperDashboard:
                 university_names = paper_info.get("university_names", [])
                 
                 display_id = arxiv_id if arxiv_id else paper_id_val
-                
+                tags_chips = format_paper_tags_html(paper_info.get("tags") or [])
+                tags_block = (
+                    f"<p><strong>标签:</strong> {tags_chips}</p>" if tags_chips else ""
+                )
+
                 info_html = f"""
                 <div style='padding: 20px; background: #f9f9f9; border-radius: 8px;'>
                     <h3 style='margin-top: 0;'>论文信息</h3>
@@ -2187,6 +2214,7 @@ class PaperDashboard:
                     {f"<p><strong>总结:</strong> {html.escape(summary)}</p>" if summary else ""}
                     {f"<p><strong>公司:</strong> {', '.join([html.escape(c) for c in company_names])}</p>" if company_names else ""}
                     {f"<p><strong>高校:</strong> {', '.join([html.escape(u) for u in university_names])}</p>" if university_names else ""}
+                    {tags_block}
                 </div>
                 """
                 paper_info_pane.object = info_html

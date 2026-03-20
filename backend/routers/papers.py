@@ -103,16 +103,16 @@ async def list_papers(
             or search_lower in (p.get("full_name") or "").lower()
             or search_lower in (p.get("abstract") or "").lower()
             or search_lower in (p.get("summary") or "").lower()
+            or any(search_lower in (t or "").lower() for t in (p.get("tags") or []))
         ]
     
     # 标签筛选
     if tag:
+        needle = tag.lower()
         papers_with_tags = []
         for p in all_papers:
-            paper_tags = db.get_paper_tags(p["paper_id"])
-            tag_names = [t["tag_name"] for t in paper_tags]
-            if any(tag.lower() in t.lower() for t in tag_names):
-                p["tags"] = tag_names
+            tag_names = p.get("tags") or []
+            if any(needle in (t or "").lower() for t in tag_names):
                 papers_with_tags.append(p)
         all_papers = papers_with_tags
     
