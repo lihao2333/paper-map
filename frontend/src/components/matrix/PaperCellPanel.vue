@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import { PopoverRoot, PopoverTrigger, PopoverAnchor, PopoverPortal, PopoverContent } from 'radix-vue'
 import AddTagPopover from '@/components/tags/AddTagPopover.vue'
 import VenueTagChips from '@/components/papers/VenueTagChips.vue'
@@ -26,6 +27,13 @@ interface Props {
 
 const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'tag-added'): void }>()
+
+/** 窄屏：避免 side=right 时浮层向左与 sticky 月份列重叠 */
+const isNarrowScreen = useMediaQuery('(max-width: 767px)')
+const popoverSide = computed(() => (isNarrowScreen.value ? 'bottom' : 'right'))
+const popoverAlign = computed(() => (isNarrowScreen.value ? 'center' : 'start'))
+const popoverSideOffset = computed(() => (isNarrowScreen.value ? 10 : 24))
+const popoverAlignOffset = computed(() => (isNarrowScreen.value ? 0 : -4))
 
 const open = ref(false)
 const pinned = ref(false)
@@ -159,13 +167,16 @@ const paperLink = computed(() => {
       </button>
     </PopoverTrigger>
     </PopoverAnchor>
-    <PopoverPortal>
+    <PopoverPortal to="body">
       <PopoverContent
-        align="start"
-        side="right"
-        :side-offset="24"
-        :align-offset="-4"
-        class="w-[380px] max-h-[85vh] overflow-y-auto overflow-x-hidden bg-white text-gray-900 border border-gray-200 shadow-xl rounded-lg p-4"
+        :align="popoverAlign"
+        :side="popoverSide"
+        :side-offset="popoverSideOffset"
+        :align-offset="popoverAlignOffset"
+        :collision-padding="
+          isNarrowScreen ? { top: 12, bottom: 12, left: 12, right: 12 } : { top: 8, bottom: 8, left: 8, right: 8 }
+        "
+        class="z-[200] w-[min(380px,calc(100vw-1.5rem))] max-h-[85vh] overflow-y-auto overflow-x-hidden bg-white text-gray-900 border border-gray-200 shadow-xl rounded-lg p-4"
         @mouseenter="onContentEnter"
         @mouseleave="onContentLeave"
       >
