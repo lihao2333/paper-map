@@ -12,6 +12,7 @@ ENV/
 # Secrets (do not commit)
 .env
 .env.local
+.envrc
 
 # Env (API keys, passwords)
 .env

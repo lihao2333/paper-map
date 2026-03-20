@@ -14,6 +14,7 @@
 ## 技术栈
 
 ### 前端
+
 - Vue 3 + TypeScript
 - Vite
 - Tailwind CSS
@@ -23,6 +24,7 @@
 - TanStack Table
 
 ### 后端
+
 - FastAPI
 - SQLite
 - Pydantic
@@ -30,6 +32,7 @@
 ## 快速开始
 
 ### 环境要求
+
 - Node.js 18+
 - Python 3.9+
 
@@ -37,13 +40,13 @@
 
 按需设置以下环境变量（启动前 `export` 或写入 shell 配置）：
 
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `PAPER_MAP_API_KEY` | AI 接口密钥（摘要、公司/高校提取等） | `sk-xxx` |
-| `PAPER_MAP_BASE_URL` | AI 接口地址，可选 | `https://api.openai.com/v1` |
-| `PAPER_MAP_MODEL` | 模型名称 | `gpt-4o-mini` |
-| `PAPER_MAP_PASSWORD` | 修改操作口令，可选 | 不设则无需密码 |
-| `DB_PATH` | 数据库路径，可选 | `data/database.db` |
+| 变量                 | 说明                                 | 示例                        |
+| -------------------- | ------------------------------------ | --------------------------- |
+| `PAPER_MAP_API_KEY`  | AI 接口密钥（摘要、公司/高校提取等） | `sk-xxx`                    |
+| `PAPER_MAP_BASE_URL` | AI 接口地址，可选                    | `https://api.openai.com/v1` |
+| `PAPER_MAP_MODEL`    | 模型名称                             | `gpt-4o-mini`               |
+| `PAPER_MAP_PASSWORD` | 修改操作口令，可选                   | 不设则无需密码              |
+| `DB_PATH`            | 数据库路径，可选                     | `data/database.db`          |
 
 ```bash
 export PAPER_MAP_API_KEY=sk-xxx
@@ -54,7 +57,7 @@ export PAPER_MAP_BASE_URL=https://api.openai.com/v1
 
 ```bash
 # 后端依赖
-pip install fastapi uvicorn pydantic
+pip install fastapi uvicorn pydantic pysqlite3
 
 # 前端依赖
 cd frontend
@@ -64,6 +67,7 @@ npm install
 ### 启动开发服务器
 
 使用启动脚本（推荐）:
+
 ```bash
 ./start.sh
 ```
@@ -119,22 +123,22 @@ paper-map/
 
 ## API 端点
 
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | /api/papers | 论文列表 |
-| GET | /api/papers/{id} | 论文详情 |
-| POST | /api/papers | 创建论文 |
-| PUT | /api/papers/{id} | 更新论文 |
-| DELETE | /api/papers/{id} | 删除论文 |
-| GET | /api/matrix/companies | 公司矩阵 |
-| GET | /api/matrix/universities | 高校矩阵 |
-| GET | /api/matrix/authors | 作者矩阵 |
-| GET | /api/tags | 标签列表 |
-| GET | /api/tags/tree | 标签树 |
-| POST | /api/collect | 收集论文 |
-| GET | /api/watched/companies | 关注公司 |
-| GET | /api/watched/universities | 关注高校 |
-| GET | /api/watched/authors | 关注作者 |
+| 方法   | 路径                      | 描述     |
+| ------ | ------------------------- | -------- |
+| GET    | /api/papers               | 论文列表 |
+| GET    | /api/papers/{id}          | 论文详情 |
+| POST   | /api/papers               | 创建论文 |
+| PUT    | /api/papers/{id}          | 更新论文 |
+| DELETE | /api/papers/{id}          | 删除论文 |
+| GET    | /api/matrix/companies     | 公司矩阵 |
+| GET    | /api/matrix/universities  | 高校矩阵 |
+| GET    | /api/matrix/authors       | 作者矩阵 |
+| GET    | /api/tags                 | 标签列表 |
+| GET    | /api/tags/tree            | 标签树   |
+| POST   | /api/collect              | 收集论文 |
+| GET    | /api/watched/companies    | 关注公司 |
+| GET    | /api/watched/universities | 关注高校 |
+| GET    | /api/watched/authors      | 关注作者 |
 
 ## 开发
 
